@@ -208,9 +208,15 @@ static bool cbGetDeviceLockMode(LSHandle* lsHandle, LSMessage *message, void *us
     json_object_object_add(json, "returnValue", json_object_new_boolean(success));
     json_object_object_add(json, "subscribed", json_object_new_boolean(subscribed));
     if (success) {
+        const EASPolicy* policy = EASPolicyManager::instance()->getPolicy();
         json_object_object_add(json, "lockMode", json_object_new_string(Security::instance()->getLockMode().c_str()));
         json_object_object_add(json, "policyState", json_object_new_string(EASPolicyManager::instance()->getPolicyState().c_str()));
         json_object_object_add(json, "retriesLeft", json_object_new_int(EASPolicyManager::instance()->retriesLeft()));
+        // Lets a remote unlockRequiresPasscode() reproduce the old in-process
+        // check exactly: pending policies that do not require a password must
+        // not demand one.
+        json_object_object_add(json, "policyRequiresPassword",
+            json_object_new_boolean(policy != 0 && policy->passwordRequired()));
     }
 
     if (!LSMessageReply(lsHandle, message, json_object_to_json_string(json), &lsError))
@@ -322,11 +328,15 @@ bool AuthService::init(GMainLoop* mainLoop)
 
 void AuthService::postDeviceLockMode()
 {
+    const EASPolicy* policy = EASPolicyManager::instance()->getPolicy();
+
     json_object* json = json_object_new_object();
     json_object_object_add(json, "returnValue", json_object_new_boolean(true));
     json_object_object_add(json, "lockMode", json_object_new_string(Security::instance()->getLockMode().c_str()));
     json_object_object_add(json, "policyState", json_object_new_string(EASPolicyManager::instance()->getPolicyState().c_str()));
     json_object_object_add(json, "retriesLeft", json_object_new_int(EASPolicyManager::instance()->retriesLeft()));
+    json_object_object_add(json, "policyRequiresPassword",
+        json_object_new_boolean(policy != 0 && policy->passwordRequired()));
 
     const char* payload = json_object_to_json_string(json);
 
