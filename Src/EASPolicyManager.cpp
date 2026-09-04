@@ -411,6 +411,11 @@ void EASPolicyManager::watchSecurityPolicies()
     LSError lserror;
     LSErrorInit (&lserror);
 
+    if (!m_service) {
+        g_warning ("%s: no service handle; not watching", __func__);
+        return;
+    }
+
     if (m_callToken) {
         g_debug ("Cancelling call token %lu", m_callToken);
         if (LSCallCancel (m_service, m_callToken, &lserror)) {
@@ -692,11 +697,17 @@ bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, vo
         goto error;
     }
 
-    // A bus callback can outrace load(): without an aggregate there is
-    // nothing to stamp the saved id onto.
+    // Every live path replaces m_aggregate synchronously before a save reply
+    // can arrive; the one state where it is NULL here is a reply in flight
+    // across destruction, where instance() just resurrected an empty manager
+    // (these callbacks route through instance(), not their ctx argument). In
+    // that state m_service is NULL too, so the error path's re-watch would
+    // only move the crash into LSCall - return outright instead.
     if (!EASPolicyManager::instance()->m_aggregate) {
         g_warning ("%s: no aggregate policy to update", __func__);
-        goto error;
+        if (root)
+            json_object_put (root);
+        return true;
     }
 
     if (EASPolicyManager::instance()->m_aggregate->m_id != id) {
