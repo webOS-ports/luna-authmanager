@@ -692,6 +692,13 @@ bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, vo
         goto error;
     }
 
+    // A bus callback can outrace load(): without an aggregate there is
+    // nothing to stamp the saved id onto.
+    if (!EASPolicyManager::instance()->m_aggregate) {
+        g_warning ("%s: no aggregate policy to update", __func__);
+        goto error;
+    }
+
     if (EASPolicyManager::instance()->m_aggregate->m_id != id) {
         EASPolicyManager::instance()->m_aggregate->m_id = id;
         g_debug ("%s: updated id to %s", __func__, id.c_str());

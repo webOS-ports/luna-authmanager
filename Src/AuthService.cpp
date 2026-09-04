@@ -272,13 +272,12 @@ AuthService::AuthService()
     , m_legacyService(NULL)
     , m_authService(NULL)
 {
-    s_instance = this;
 }
 
 AuthService* AuthService::instance()
 {
     if (!s_instance)
-        new AuthService();
+        s_instance = new AuthService();
 
     return s_instance;
 }
