@@ -112,7 +112,7 @@ static const unsigned int s_version = 2;
 EASPolicyManager* EASPolicyManager::instance()
 {
     if (G_UNLIKELY(s_instance == 0))
-        new EASPolicyManager;
+        s_instance = new EASPolicyManager;
     return s_instance;
 }
 
@@ -124,7 +124,6 @@ EASPolicyManager::EASPolicyManager()
     , m_lastRev(0)
     , m_callToken(0)
 {
-    s_instance = this;
 }
 
 EASPolicyManager::~EASPolicyManager()
@@ -633,7 +632,6 @@ bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, vo
     const char* str = LSMessageGetPayload(message);
     json_object *root = 0, *label = 0, *policy = 0, *results = 0;
     bool returnValue = false;
-    int rev = 0;
     std::string id;
 
     if (!str)
@@ -658,8 +656,8 @@ bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, vo
     }
 
     results = json_object_object_get (root, "results");
-    if (!results) {
-        g_warning ("No results in device policy, call to store device policy failed");
+    if (!results || !json_object_is_type (results, json_type_array)) {
+        g_warning ("No results array in device policy, call to store device policy failed");
         goto error;
     }
 
@@ -685,34 +683,32 @@ bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, vo
         goto error;
     }
 
-    label = json_object_object_get (policy, "rev");
-    if (!label)  {
-        g_warning ("No rev available");
-        goto error;
-    }
- 
-    rev = json_object_get_int (label);
-    if (rev <= 0) {
-        g_warning ("Invalid rev");
-        goto error;
-    }
+    // The rev is deliberately not read here - the watch rev must not move
+    // past updates that landed between the last policy query and this save
+    // (see below). It used to be validated anyway, and a reply with a good
+    // id but no rev would discard the id, leaving m_id empty so the *next*
+    // save took the put branch and duplicated the device-policy record.
 
     // Every live path replaces m_aggregate synchronously before a save reply
     // can arrive; the one state where it is NULL here is a reply in flight
-    // across destruction, where instance() just resurrected an empty manager
-    // (these callbacks route through instance(), not their ctx argument). In
-    // that state m_service is NULL too, so the error path's re-watch would
-    // only move the crash into LSCall - return outright instead.
-    if (!EASPolicyManager::instance()->m_aggregate) {
-        g_warning ("%s: no aggregate policy to update", __func__);
-        if (root)
-            json_object_put (root);
-        return true;
-    }
+    // across destruction, where instance() just resurrected an empty manager.
+    // instance() - not the ctx argument - is deliberate: in that same state
+    // ctx would be a dangling pointer to the destroyed manager. m_service is
+    // NULL there too, so the error path's re-watch would only move the crash
+    // into LSCall - return outright instead.
+    {
+        EASPolicyManager* pm = EASPolicyManager::instance();
+        if (!pm->m_aggregate) {
+            g_warning ("%s: no aggregate policy to update", __func__);
+            if (root)
+                json_object_put (root);
+            return true;
+        }
 
-    if (EASPolicyManager::instance()->m_aggregate->m_id != id) {
-        EASPolicyManager::instance()->m_aggregate->m_id = id;
-        g_debug ("%s: updated id to %s", __func__, id.c_str());
+        if (pm->m_aggregate->m_id != id) {
+            pm->m_aggregate->m_id = id;
+            g_debug ("%s: updated id to %s", __func__, id.c_str());
+        }
     }
 
     // do not update the watch rev after saving the device policy

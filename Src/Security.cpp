@@ -76,7 +76,7 @@ static Security* s_instance = 0;
 Security* Security::instance()
 {
     if (G_UNLIKELY(s_instance == 0)) {
-        new Security;
+        s_instance = new Security;
     }
     return s_instance;
 }
@@ -85,8 +85,6 @@ Security::Security()
     : m_numRetries(s_defaultMaxRetries)
     , m_service(0)
 {
-    s_instance = this;
-
     readLockMode();
 
     registerService();
