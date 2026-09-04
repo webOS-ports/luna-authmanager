@@ -1,0 +1,23 @@
+{
+    "exeName":"@WEBOS_INSTALL_SBINDIR@/LunaAuthManager",
+    "trustLevel": "oem",
+    "type": "privileged",
+    "allowedNames": ["com.palm.systemmanager", "com.palm.systemmanager-keymanager", "com.webos.service.auth"],
+    "permissions": [
+        {
+            "service":"com.palm.systemmanager",
+            "inbound":["*"],
+            "outbound":["*"]
+        },
+        {
+            "service":"com.palm.systemmanager-keymanager",
+            "inbound":["*"],
+            "outbound":["*"]
+        },
+        {
+            "service":"com.webos.service.auth",
+            "inbound":["*"],
+            "outbound":["*"]
+        }
+    ]
+}

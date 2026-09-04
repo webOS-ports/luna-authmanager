@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.palm.systemmanager;com.palm.systemmanager-keymanager;com.webos.service.auth
+Exec=@WEBOS_INSTALL_SBINDIR@/LunaAuthManager
+Type=static

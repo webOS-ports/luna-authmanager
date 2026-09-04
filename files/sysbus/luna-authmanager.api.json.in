@@ -1,0 +1,24 @@
+{
+    "auth.operation": [
+        "com.palm.systemmanager/setDevicePasscode",
+        "com.palm.systemmanager/matchDevicePasscode",
+        "com.palm.systemmanager/getDeviceLockMode",
+        "com.palm.systemmanager/getSecurityPolicy",
+        "com.webos.service.auth/setDevicePasscode",
+        "com.webos.service.auth/matchDevicePasscode",
+        "com.webos.service.auth/getDeviceLockMode",
+        "com.webos.service.auth/getSecurityPolicy"
+    ],
+    "auth.query": [
+        "com.palm.systemmanager/getDeviceLockMode",
+        "com.palm.systemmanager/getSecurityPolicy",
+        "com.webos.service.auth/getDeviceLockMode",
+        "com.webos.service.auth/getSecurityPolicy"
+    ],
+    "luna-sysmgr.operation": [
+        "com.palm.systemmanager/setDevicePasscode",
+        "com.palm.systemmanager/matchDevicePasscode",
+        "com.palm.systemmanager/getDeviceLockMode",
+        "com.palm.systemmanager/getSecurityPolicy"
+    ]
+}

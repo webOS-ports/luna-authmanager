@@ -1,0 +1,13 @@
+[Unit]
+Description=LuneOS authentication manager (device lock, EAS policy)
+Requires=ls-hubd.service
+After=ls-hubd.service configurator-db8.service
+
+[Service]
+Type=simple
+Restart=on-failure
+ExecStart=/usr/sbin/LunaAuthManager
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=multi-user.target
