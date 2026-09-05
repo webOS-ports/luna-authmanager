@@ -1,6 +1,10 @@
 luna-authmanager
 ================
 
+Summary
+-------
+The LuneOS authentication manager: device lock modes, EAS policy, retry and lockout state
+
 The LuneOS authentication manager: device lock modes (PIN, password,
 pattern, and "face" for a future adapter), Exchange ActiveSync policy
 enforcement, retry/lockout state, keymanager password sync, and device
