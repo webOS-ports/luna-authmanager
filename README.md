@@ -62,7 +62,7 @@ its count runs as well, and the device is wiped when it runs out.
 `/var/luna/data/.passcode` (0600) holds the lock mode and a yescrypt hash
 from crypt(3), with a fresh salt for every passcode:
 
-    {"version": 2, "pin": "$y$j9T$<salt>$<hash>"}
+    {"version": 2, "pin": "$y$j7T$<salt>$<hash>"}
 
 A file without `"version"` is luna-sysmgr's format (an unsalted SHA-1, cut
 at its first NUL byte). It is still matched, and is rewritten as version 2

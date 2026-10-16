@@ -41,7 +41,7 @@
  * The passcode file holds the lock mode as its one key, with the hashed
  * passcode as the value:
  *
- *   {"version": 2, "pin": "$y$j9T$<salt>$<hash>"}
+ *   {"version": 2, "pin": "$y$j7T$<salt>$<hash>"}
  *
  * A version 2 value is a yescrypt string from crypt(3), with a fresh salt for
  * every passcode. A file without "version" is what luna-sysmgr wrote: the
@@ -51,6 +51,14 @@
  */
 static const int s_passcodeVersion = 2;
 static const char s_hashPrefix[] = "$y$";
+
+// yescrypt's cost, as crypt_gensalt takes it. Measured on a tenderloin
+// (armv7): 70 ms and 4.5 MiB a hash at 3, 145 ms at 4, 285 ms and 16.5 MiB
+// at libxcrypt's default of 5, every one of them paid on each unlock. The
+// lockout is what holds off guessing on the device; the cost is for a copy
+// of the file. The cost is part of each stored hash, so changing it here
+// leaves passcodes already set working.
+static const unsigned long s_hashCost = 3;
 
 // Lock modes that hash-and-store a passcode the same way: a PIN and a
 // password always did, and a drawn pattern needs nothing more than that
@@ -108,9 +116,8 @@ static std::string hashPasscode(const std::string& passcode)
 {
     char salt[CRYPT_GENSALT_OUTPUT_SIZE];
 
-    // A count of 0 is libxcrypt's default cost; the salt's random bytes come
-    // from the kernel.
-    if (!crypt_gensalt_rn(s_hashPrefix, 0, NULL, 0, salt, sizeof(salt))) {
+    // The salt's random bytes come from the kernel.
+    if (!crypt_gensalt_rn(s_hashPrefix, s_hashCost, NULL, 0, salt, sizeof(salt))) {
         g_warning("%s: cannot make a salt: %s", __func__, g_strerror(errno));
         return "";
     }
