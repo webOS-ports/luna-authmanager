@@ -38,8 +38,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Security's constructor reads the lock mode, registers the keymanager
-    // companion name and subscribes to policy changes - it needs the bus up.
+    // Security's constructor reads the lock mode and registers the
+    // keymanager companion name - it needs the bus up.
     (void) Security::instance();
 
     // Load and enforce whatever EAS policies are stored in db8.

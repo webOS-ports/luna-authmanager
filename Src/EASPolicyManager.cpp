@@ -29,32 +29,6 @@
 #include <math.h>
 #include <stdlib.h>
 
-// Platform-supported lock timeouts; was Preferences::roundLockTimeout in
-// luna-sysmgr-common, copied here so policy clamping does not need the
-// whole preferences stack.
-static uint32_t roundLockTimeout(uint32_t unrounded)
-{
-    if (unrounded < 30)
-        return 0;
-    else if (unrounded < 60)
-        return 30;
-    else if (unrounded < 120)
-        return 60;
-    else if (unrounded < 180)
-        return 120;
-    else if (unrounded < 300)
-        return 180;
-    else if (unrounded < 600)
-        return 300;
-    else if (unrounded < 1800)
-        return 600;
-    else if (unrounded < 9999)
-        return 1800;
-    return 0;
-}
-
-
-
 /*
 
 Version 1
@@ -104,9 +78,42 @@ Device Policy fields defined in: https://wiki.palm.com/display/Nova/Device+Polic
 
 */
 
-static const char* s_policyFile = "/var/luna/data/.policy";
 static EASPolicyManager* s_instance = 0;
-static const unsigned int s_version = 2;
+
+// Seconds before a failed db8 call is made again.
+static const guint s_retrySeconds = 5;
+
+// A count or length from a policy record: anything below 0 is 0 and anything
+// past 32 bits is the largest, rather than -1 turning into 4294967295.
+static uint32_t policyCount(json_object* key, uint32_t missing)
+{
+    if (!key)
+        return missing;
+    int64_t v = json_object_get_int64(key);
+    if (v < 0)
+        return 0;
+    if (v > (int64_t) UINT32_MAX)
+        return UINT32_MAX;
+    return (uint32_t) v;
+}
+
+// The db8 reply's "results", if the call succeeded and it is an array.
+static json_object* resultsOf(json_object* root, const char* func)
+{
+    json_object* rv = 0;
+    if (!json_object_object_get_ex(root, "returnValue", &rv) || !json_object_get_boolean(rv)) {
+        g_warning("%s: db8 call failed: %s", func, json_object_to_json_string(root));
+        return 0;
+    }
+
+    json_object* results = 0;
+    if (!json_object_object_get_ex(root, "results", &results)
+            || !json_object_is_type(results, json_type_array)) {
+        g_warning("%s: no results array in the reply", func);
+        return 0;
+    }
+    return results;
+}
 
 
 EASPolicyManager* EASPolicyManager::instance()
@@ -123,11 +130,16 @@ EASPolicyManager::EASPolicyManager()
     , m_aggregate(0)
     , m_lastRev(0)
     , m_callToken(0)
+    , m_saveInFlight(false)
+    , m_saveAgain(false)
+    , m_retrySource(0)
 {
 }
 
 EASPolicyManager::~EASPolicyManager()
 {
+    if (m_retrySource)
+        g_source_remove(m_retrySource);
     delete m_aggregate;
     m_aggregate = NULL;
     s_instance = NULL;
@@ -154,7 +166,7 @@ void EASPolicyManager::removeTemporaryPolicies()
     g_free (query);
 }
 
-bool EASPolicyManager::cbTempPoliciesDeleted (LSHandle *sh, LSMessage *message, void *data)
+bool EASPolicyManager::cbTempPoliciesDeleted (LSHandle*, LSMessage *message, void*)
 {
     const char* str = LSMessageGetPayload(message);
     json_object *root = 0, *returnValue = 0, *obj = 0;
@@ -218,23 +230,29 @@ void EASPolicyManager::queryDevicePolicy()
     g_free (query);
 }
 
-bool EASPolicyManager::cbDevicePolicy (LSHandle *sh, LSMessage *message, void *data)
+bool EASPolicyManager::cbDevicePolicy (LSHandle*, LSMessage *message, void*)
 {
+    EASPolicyManager* pm = EASPolicyManager::instance();
     const char* str = LSMessageGetPayload(message);
     json_object *root = 0, *results = 0, *policy = 0;
 
+    if (str)
+        root = json_tokener_parse(str);
+    if (root)
+        results = resultsOf(root, __func__);
 
-    if (!str)
-        goto done;
+    // An error is not "no device policy": writing a default one here would
+    // add a second record next to the real one, and reset its retry count.
+    if (!results) {
+        if (root)
+            json_object_put (root);
+        pm->retryLater(&EASPolicyManager::retryDevicePolicy);
+        return true;
+    }
 
-    root = json_tokener_parse(str);
-    if (!root)
-        goto done;
-    
-    results = json_object_object_get (root, "results");
-    if (!results || json_object_array_length (results) == 0) {
+    if (json_object_array_length (results) == 0) {
         g_debug ("No security policies set, setting a default policy");
-        EASPolicyManager::instance()->setDevicePolicy();
+        pm->setDevicePolicy();
         goto done;
     }
 
@@ -248,13 +266,12 @@ bool EASPolicyManager::cbDevicePolicy (LSHandle *sh, LSMessage *message, void *d
         goto done;
     }
 
-    EASPolicyManager::instance()->setDevicePolicy (policy);
+    pm->setDevicePolicy (policy);
 
 done:
-    EASPolicyManager::instance()->querySecurityPolicies();
+    pm->querySecurityPolicies();
 
-    if (root)
-        json_object_put (root);
+    json_object_put (root);
 
     return true;
 }
@@ -280,10 +297,7 @@ void EASPolicyManager::setDevicePolicy (json_object* policy)
 
 
             key = json_object_object_get(prop, "retriesLeft");
-            if (key)
-                m_retriesLeft = json_object_get_int(key);
-            else
-                m_retriesLeft = m_aggregate->maxRetries();
+            m_retriesLeft = policyCount(key, m_aggregate->maxRetries());
         }
         else {
             m_isEnforced = false;
@@ -318,28 +332,23 @@ void EASPolicyManager::querySecurityPolicies()
 }
 
 
-bool EASPolicyManager::cbSecurityPolicy (LSHandle *sh, LSMessage *message, void *data)
+bool EASPolicyManager::cbSecurityPolicy (LSHandle*, LSMessage *message, void*)
 {
+    EASPolicyManager* pm = EASPolicyManager::instance();
     const char* str = LSMessageGetPayload(message);
-    json_object *root = 0, *results = 0, *policy = 0;
+    json_object *root = 0, *results = 0;
 
-    if (!str)
-        goto done;
+    if (str)
+        root = json_tokener_parse(str);
+    if (root)
+        results = resultsOf(root, __func__);
 
-    root = json_tokener_parse(str);
-    if (!root)
-        goto done;
-    
-    results = json_object_object_get (root, "results");
-    if (!results) {
-        g_debug ("No security policies set, no processing needed");
-        goto done;
-    }
+    // Without the policies there is no watch either: ask again.
+    if (results)
+        pm->updateDevicePolicy (results);
+    else
+        pm->retryLater(&EASPolicyManager::retrySecurityPolicies);
 
-    EASPolicyManager::instance()->updateDevicePolicy (results);
-
-done:
-    
     if (root)
         json_object_put (root);
 
@@ -350,7 +359,6 @@ done:
 void EASPolicyManager::updateDevicePolicy (json_object* policies)
 {
     EASPolicy* oldPolicy = m_aggregate;
-    int index;
 
     // resetting the aggregate before parsing the security policies again.
     // no special handling required for changes or policy decisions
@@ -359,12 +367,10 @@ void EASPolicyManager::updateDevicePolicy (json_object* policies)
     if (oldPolicy) // inherit the id from the old policy
         m_aggregate->m_id = oldPolicy->m_id;
 
-    bool updated = false;
-
-    for (index = 0; index < json_object_array_length (policies); ++index) {
+    for (size_t index = 0; index < json_object_array_length (policies); ++index) {
         json_object* policy = json_object_array_get_idx(policies, index);
         if (!policy) {
-            g_warning ("Index %d has no security policy", index);
+            g_warning ("Index %zu has no security policy", index);
             continue;
         }
         g_debug ("Importing policy %s", json_object_get_string(policy));
@@ -381,7 +387,7 @@ void EASPolicyManager::updateDevicePolicy (json_object* policies)
 
     if (oldPolicy) {
         if (oldPolicy->maxRetries() != m_aggregate->maxRetries()) {
-            g_debug("New policy has different number of retries: old (%d), new (%d)",
+            g_debug("New policy has different number of retries: old (%u), new (%u)",
                     oldPolicy->maxRetries(), m_aggregate->maxRetries());
             m_retriesLeft = m_aggregate->maxRetries();
         }
@@ -405,6 +411,22 @@ void EASPolicyManager::updateDevicePolicy (json_object* policies)
 }
 
 
+void EASPolicyManager::cancelWatch()
+{
+    if (!m_callToken)
+        return;
+
+    LSError lserror;
+    LSErrorInit (&lserror);
+
+    g_debug ("Cancelling call token %lu", m_callToken);
+    if (!LSCallCancel (m_service, m_callToken, &lserror)) {
+        g_warning ("Unable to cancel call with token %lu error message %s", m_callToken, lserror.message);
+        LSErrorFree (&lserror);
+    }
+    m_callToken = 0;
+}
+
 void EASPolicyManager::watchSecurityPolicies()
 {
     LSError lserror;
@@ -415,31 +437,26 @@ void EASPolicyManager::watchSecurityPolicies()
         return;
     }
 
-    if (m_callToken) {
-        g_debug ("Cancelling call token %lu", m_callToken);
-        if (LSCallCancel (m_service, m_callToken, &lserror)) {
-            g_warning ("Unable to cancel call with token %lu error message %s", m_callToken, lserror.message);
-        }
-        m_callToken = 0;
-    }
+    cancelWatch();
 
-
-    gchar* query = g_strdup_printf ("{\"query\":{\"from\":\"com.palm.securitypolicy:1\",\"where\":[{\"prop\":\"_rev\",\"op\":\">\",\"val\":%d}], \"incDel\": true }}", m_lastRev);
+    gchar* query = g_strdup_printf ("{\"query\":{\"from\":\"com.palm.securitypolicy:1\",\"where\":[{\"prop\":\"_rev\",\"op\":\">\",\"val\":%lld}], \"incDel\": true }}", (long long) m_lastRev);
     g_message ("Setting watch with paramters %s", query);
     bool result = LSCall (m_service, "palm://com.palm.db/watch", query, &EASPolicyManager::cbWatchResponse, this,&m_callToken, &lserror);
     if (!result) {
         g_warning ("%s: Failed at %s with message %s", __func__, lserror.func, lserror.message);
         LSErrorFree (&lserror);
+        m_callToken = 0;
+        retryLater(&EASPolicyManager::retryWatch);
     }
     g_free (query);
 }
 
 
-bool EASPolicyManager::cbWatchResponse (LSHandle *sh, LSMessage *message, void *data)
+bool EASPolicyManager::cbWatchResponse (LSHandle*, LSMessage *message, void*)
 {
+    EASPolicyManager* pm = EASPolicyManager::instance();
     const char* str = LSMessageGetPayload(message);
     json_object *root = 0, *label = 0;
-    bool returnValue = false;
     bool fired = false;
 
     if (!str)
@@ -449,17 +466,20 @@ bool EASPolicyManager::cbWatchResponse (LSHandle *sh, LSMessage *message, void *
     root = json_tokener_parse(str);
     if (!root)
         goto error;
-    
+
     label = json_object_object_get (root, "returnValue");
     if (!label)
         goto error;
 
-    returnValue = json_object_get_boolean (label);
-    if (!returnValue) {
+    if (!json_object_get_boolean (label)) {
+        // db8 dropped the watch (it restarted, say): set it up again.
         g_warning ("%s: returnValue is false", __func__);
+        pm->cancelWatch();
+        pm->retryLater(&EASPolicyManager::retryWatch);
         goto error;
     }
 
+    // The first reply only says the watch is set.
     label = json_object_object_get (root, "fired");
     if (!label) {
         goto error;
@@ -471,16 +491,17 @@ bool EASPolicyManager::cbWatchResponse (LSHandle *sh, LSMessage *message, void *
         goto error;
     }
 
-    EASPolicyManager::instance()->m_callToken = 0; // resetting call token after watch has fired
+    // A watch fires once; the call stays open in ls2 until cancelled.
+    pm->cancelWatch();
 
     g_debug ("%s: Watch on security policy fired, query security policy", __func__);
-    EASPolicyManager::instance()->querySecurityPolicies();
+    pm->querySecurityPolicies();
 
 error:
 
     if (root)
         json_object_put (root);
-    
+
     return true;
 }
 
@@ -512,76 +533,6 @@ bool EASPolicyManager::load()
 }
 
 
-bool EASPolicyManager::importOldPolicySettings()
-{
-    json_object *root = 0, *prop = 0, *key = 0;
-    root = json_object_from_file((char*)s_policyFile);
-    if (!root)
-        return false;
-
-
-    prop = json_object_object_get(root, "version");
-    if (!prop) {
-
-        g_message("converting version 1 schema to version %d", s_version);
-
-        // migrate version 1 schema
-        EASPolicy* p = new EASPolicy;
-        if(p->fromJSON(root))
-            m_aggregate->merge (p);
-        delete p;
-        p = NULL;
-    }
-    else if (json_object_get_int(prop) == 2) {
-
-        // parse version 2 schema
-        g_message("parsing version 2 schema");
-        
-        // parse all policies and create aggregate
-        prop = json_object_object_get(root, "policies");
-        if (prop && json_object_is_type(prop, json_type_array)) {
-
-            for (int i = 0; i < json_object_array_length(prop); i++) {
-
-                EASPolicy* p = new EASPolicy;
-                key = json_object_array_get_idx(prop, i);
-                if (p->fromJSON(key))
-                    m_aggregate->merge(p);
-                                delete p;
-            }
-        }
-    }
-    else {
-        g_critical("unrecognized EAS policy schema version %d", json_object_get_int(prop));
-        return false;
-    }
-    
-    // status
-    prop = json_object_object_get(root, "status");
-    if (prop) {
-        
-        key = json_object_object_get(prop, "enforced");
-        m_isEnforced = (key == 0 ? false : json_object_get_boolean(key));
-
-        
-        key = json_object_object_get(prop, "retriesLeft");
-        if (key)
-            m_retriesLeft = json_object_get_int(key);
-        else if (m_aggregate)
-            m_retriesLeft = m_aggregate->maxRetries();
-    }
-    else {
-        m_isEnforced = false;
-        if (m_aggregate)
-            m_retriesLeft = m_aggregate->maxRetries();
-    }
-    
-    // check the installed policies against the set of email accounts
-
-    json_object_put(root);
-    return true;
-}
-
 void EASPolicyManager::save()
 {
     if (!m_service) {
@@ -589,45 +540,38 @@ void EASPolicyManager::save()
         return;
     }
 
+    if (m_saveInFlight) {
+        m_saveAgain = true;
+        return;
+    }
+
     LSError lserror;
     LSErrorInit (&lserror);
 
-    if (m_callToken) {
-        g_debug ("Cancelling call token %lu", m_callToken);
-        if (LSCallCancel (m_service, m_callToken, &lserror)) {
-            g_warning ("Unable to cancel call with token %lu error message %s", m_callToken, lserror.message);
-        }
-        m_callToken = 0;
-    }
+    cancelWatch();
 
     json_object* policyJson = m_aggregate->toNewJSON();
     json_object_object_add(policyJson, "status", getPolicyStatus());
     gchar* policyStr = g_strdup_printf ("{ \"objects\":[%s]}", json_object_to_json_string (policyJson));
     g_message ("%s: Writing device policy %s to mojodb", __func__, policyStr);
 
-    if (m_aggregate->m_id.empty()) {
-
-        if (!LSCallOneReply (m_service, "palm://com.palm.db/put", policyStr, 
-                             &EASPolicyManager::cbDevicePolicySaved, this, NULL, &lserror)) 
-        {
-            g_warning ("%s: Failed at %s with message %s", __func__, lserror.func, lserror.message);
-            LSErrorFree (&lserror);
-        }
-    }
-    else {
-
-        if (!LSCallOneReply (m_service, "palm://com.palm.db/merge", policyStr, 
-                    &EASPolicyManager::cbDevicePolicySaved, this, NULL, &lserror)) {
-            g_warning ("%s: Failed at %s with message %s", __func__, lserror.func, lserror.message);
-            LSErrorFree (&lserror);
-        }
+    const char* uri = m_aggregate->m_id.empty() ? "palm://com.palm.db/put" : "palm://com.palm.db/merge";
+    m_saveInFlight = LSCallOneReply (m_service, uri, policyStr,
+                                     &EASPolicyManager::cbDevicePolicySaved, this, NULL, &lserror);
+    if (!m_saveInFlight) {
+        g_warning ("%s: Failed at %s with message %s", __func__, lserror.func, lserror.message);
+        LSErrorFree (&lserror);
     }
 
     json_object_put (policyJson);
     g_free (policyStr);
+
+    // No reply will come to set the watch again.
+    if (!m_saveInFlight)
+        watchSecurityPolicies();
 }
 
-bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, void *data)
+bool EASPolicyManager::cbDevicePolicySaved (LSHandle*, LSMessage *message, void*)
 {
     const char* str = LSMessageGetPayload(message);
     json_object *root = 0, *label = 0, *policy = 0, *results = 0;
@@ -720,11 +664,53 @@ bool EASPolicyManager::cbDevicePolicySaved (LSHandle *sh, LSMessage *message, vo
     // revision of the device policy
 
 error:
-    EASPolicyManager::instance()->watchSecurityPolicies();
-
     if (root)
         json_object_put (root);
+
+    {
+        EASPolicyManager* pm = EASPolicyManager::instance();
+        pm->m_saveInFlight = false;
+        if (pm->m_saveAgain) {
+            // save() sets the watch once the last save is answered.
+            pm->m_saveAgain = false;
+            pm->save();
+        }
+        else {
+            pm->watchSecurityPolicies();
+        }
+    }
     return true;
+}
+
+void EASPolicyManager::retryLater(GSourceFunc what)
+{
+    if (m_retrySource)
+        g_source_remove(m_retrySource);
+    m_retrySource = g_timeout_add_seconds(s_retrySeconds, what, this);
+}
+
+gboolean EASPolicyManager::retryDevicePolicy(gpointer)
+{
+    EASPolicyManager* pm = EASPolicyManager::instance();
+    pm->m_retrySource = 0;
+    pm->queryDevicePolicy();
+    return G_SOURCE_REMOVE;
+}
+
+gboolean EASPolicyManager::retrySecurityPolicies(gpointer)
+{
+    EASPolicyManager* pm = EASPolicyManager::instance();
+    pm->m_retrySource = 0;
+    pm->querySecurityPolicies();
+    return G_SOURCE_REMOVE;
+}
+
+gboolean EASPolicyManager::retryWatch(gpointer)
+{
+    EASPolicyManager* pm = EASPolicyManager::instance();
+    pm->m_retrySource = 0;
+    pm->watchSecurityPolicies();
+    return G_SOURCE_REMOVE;
 }
 
 
@@ -732,8 +718,6 @@ void EASPolicyManager::notifyPolicyChanged()
 {
     // immediately enforce policy?
     m_isEnforced = Security::instance()->passcodeSatisfiesPolicy(m_aggregate);
-
-    Q_EMIT signalPolicyChanged(m_aggregate);
 
     g_message("policy enforcement succeeded? %d", m_isEnforced);
 
@@ -771,8 +755,6 @@ void EASPolicyManager::passwordEnforced()
 
     m_isEnforced = true;
     m_retriesLeft = m_aggregate->maxRetries();
-
-    Q_EMIT signalPolicyChanged(m_aggregate);
 
     save();
 }
@@ -853,56 +835,6 @@ json_object* EASPolicy::toJSON() const
     return policy;
 }
 
-bool EASPolicy::fromJSON(json_object* policy)
-{
-    json_object *prop = 0, *key = 0;
-
-    prop = json_object_object_get(policy, "password");
-    if (prop) {
-        
-        key = json_object_object_get(prop, "enabled");
-        m_passwordRequired = json_object_get_boolean(key);
-        
-
-        key = json_object_object_get(prop, "minLength");
-        if (key)
-            m_minLength = json_object_get_int(key);
-        else
-            m_minLength = 1;
-
-        key = json_object_object_get(prop, "maxRetries");
-        if (key)
-            m_maxRetries = json_object_get_int(key);
-        else
-            m_maxRetries = 1;
-
-        key = json_object_object_get(prop, "alphaNumeric");
-        m_isAlphaNumeric = json_object_get_boolean(key);
-    }
-    else {
-        m_passwordRequired = false;
-        m_minLength = 1;
-        m_maxRetries = 1;
-        m_isAlphaNumeric = false;
-    }
-
-    key = json_object_object_get(policy, "inactivityInSeconds");
-    if (key) {
-        m_inactivityInSeconds = json_object_get_int(key);
-    }
-    else {
-        m_inactivityInSeconds = 0;
-    }
-
-    key = json_object_object_get(policy, "id");
-    if (key) {
-        const char* str = json_object_get_string(key);
-        m_id = (str != NULL ? str : "");
-    }
-
-    return !m_id.empty();
-}
-
 bool EASPolicy::fromNewJSON(json_object* policy)
 {
     json_object *key = 0;
@@ -919,23 +851,9 @@ bool EASPolicy::fromNewJSON(json_object* policy)
     else 
         m_isAlphaNumeric = false;
 
-    key = json_object_object_get(policy, "minDevicePasswordLength");
-    if (key)
-        m_minLength = json_object_get_int(key);
-    else
-        m_minLength = 1;
-
-    key = json_object_object_get(policy, "maxDevicePasswordFailedAttempts");
-    if (key)
-        m_maxRetries = json_object_get_int(key);
-    else
-        m_maxRetries = 1;
-
-    key = json_object_object_get(policy, "maxInactivityTimeDeviceLock");
-    if (key)
-        m_inactivityInSeconds = json_object_get_int(key);
-    else 
-        m_inactivityInSeconds = 0;
+    m_minLength = policyCount(json_object_object_get(policy, "minDevicePasswordLength"), 1);
+    m_maxRetries = policyCount(json_object_object_get(policy, "maxDevicePasswordFailedAttempts"), 1);
+    m_inactivityInSeconds = policyCount(json_object_object_get(policy, "maxInactivityTimeDeviceLock"), 0);
 
     key = json_object_object_get(policy, "allowSimpleDevicePassword");
     if (key)
@@ -949,13 +867,8 @@ bool EASPolicy::fromNewJSON(json_object* policy)
         m_id = (str != NULL ? str : "");
     }
 
-    if (!m_id.empty())
-        key = json_object_object_get (policy, "_rev");
-
-    if (key)
-        m_revision = json_object_get_int (key);
-    else
-        m_revision = 0;
+    key = json_object_object_get (policy, "_rev");
+    m_revision = key ? json_object_get_int64 (key) : 0;
     
     key = json_object_object_get(policy, "_kind");
     if (key) {
@@ -993,16 +906,6 @@ uint32_t EASPolicy::maxInactivityInSeconds() const
         return m_inactivityInSeconds - (m_inactivityInSeconds % 60);
     }
     return 0; // default to the strictest timeout
-}
-
-uint32_t EASPolicy::clampInactivityInSeconds(uint32_t inactivityInSeconds) const
-{
-    // clamp to a valid value
-    uint32_t maxTimeout = maxInactivityInSeconds();
-    if (validInactivityInSeconds() && inactivityInSeconds >= maxTimeout)
-        return maxTimeout;
-    else
-        return roundLockTimeout(inactivityInSeconds);
 }
 
 void EASPolicy::merge(const EASPolicy* newPolicy)
