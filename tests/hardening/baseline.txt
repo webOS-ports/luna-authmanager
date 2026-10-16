@@ -1,0 +1,40 @@
+# Static-analysis findings that were looked at and are not fixed, with why.
+# static-analysis.sh fails on anything not listed here; line numbers are
+# ignored when matching, so an entry survives code moving around it.
+# Format: <tool>: <file>:<line>: <message>   # <reason>
+
+# false positive: gcc's analyzer does not follow libstdc++'s small-string
+# buffer when a std::string is built from a literal or a char* and returned;
+# ASan, UBSan and valgrind run these paths in the tests without a report
+gcc-fanalyzer-O0: Src/EASPolicyManager.cpp:735:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/EASPolicyManager.cpp:736:38: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/Security.cpp:79:41: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/Security.cpp:101:62: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/Security.cpp:115:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/Security.cpp:117:40: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/EASPolicyManager.cpp:735:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/EASPolicyManager.cpp:736:38: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/Security.cpp:79:41: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/Security.cpp:101:62: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/Security.cpp:115:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/Security.cpp:117:40: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+
+# coverage gap, not a defect: the analyzer gave up on validateStrength()'s
+# nested loops at the raised budget; test_passcode.cpp covers its cases
+gcc-fanalyzer-O0: Src/Security.cpp:614:25: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+gcc-fanalyzer-O2: Src/Security.cpp:614:25: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+
+# by design: exit() after storaged accepted the wipe; the daemon is
+# single-threaded (glib main loop, no threads of its own)
+clang-tidy: Src/Security.cpp:577: warning: function is not thread safe [concurrency-mt-unsafe]
+
+# false positive: strlen() of NUL-terminated strings (a string literal, and
+# json-c's serialisation)
+flawfinder: Src/Security.cpp:122:  [1] (buffer) strlen:
+flawfinder: Src/Security.cpp:515:  [1] (buffer) strlen:
+
+# false positive: this is the race-safe form - the temporary file is opened
+# O_CREAT|O_EXCL|O_NOFOLLOW (no existing file or link is reused), the
+# directory O_DIRECTORY only to fsync it
+flawfinder: Src/Security.cpp:513:  [2] (misc) open:
+flawfinder: Src/Security.cpp:524:  [2] (misc) open:

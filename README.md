@@ -68,6 +68,13 @@ A file without `"version"` is luna-sysmgr's format (an unsalted SHA-1, cut
 at its first NUL byte). It is still matched, and is rewritten as version 2
 the first time the right passcode is given.
 
+Tests
+-----
+
+`tests/` has unit tests on the build host (`-DBUILD_TESTING=ON`), the
+sanitizer, static-analysis and warning gates; see
+[tests/README.md](tests/README.md).
+
 History
 -------
 

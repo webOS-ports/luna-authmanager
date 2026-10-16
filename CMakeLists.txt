@@ -78,3 +78,8 @@ target_link_libraries(LunaAuthManager
 
 webos_build_daemon(NAME LunaAuthManager)
 webos_build_system_bus_files()
+
+option(BUILD_TESTING "Build the unit tests in tests/" OFF)
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
