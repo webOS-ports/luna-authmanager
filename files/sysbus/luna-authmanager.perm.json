@@ -1,17 +1,14 @@
 {
     "com.palm.systemmanager": [
         "database.management",
-        "database.operation",
-        "telephony.management",
-        "systemsettings.management"
+        "database.operation"
     ],
     "com.palm.systemmanager-keymanager": [
-        "database.management",
-        "database.operation",
-        "keymanager-service.operation"
+        "keymanager-service.operation",
+        "storaged.operation"
     ],
-    "com.webos.service.auth": [
-        "database.management",
-        "database.operation"
+    "com.webos.service.auth": [],
+    "com.webos.surfacemanager-cardshell": [
+        "auth.passcode"
     ]
 }

@@ -23,33 +23,30 @@
 #ifndef SECURITY_H
 #define SECURITY_H
 
+#include <stdint.h>
 
 #include <string>
 
 #include <luna-service2/lunaservice.h>
 
-#include <json.h>
-
-#include <QObject>
-#include <QString>
-
 class EASPolicy;
 
-class Security : public QObject
+class Security
 {
-    Q_OBJECT
-
 public:
 
     static Security* instance();
     ~Security();
 
-    bool passcodeSet() const;
-
     const std::string& getLockMode() const { return m_lockMode; }
 
     int setPasscode(const std::string& mode, const std::string& passcode, std::string& errorText);
-    bool matchPasscode(std::string passcode, int& retriesLeft, bool& lockedOut);
+
+    // lockoutSeconds is how long the caller must wait before the next try;
+    // it is set (with lockedOut) both when a try is refused for an earlier
+    // lockout and when this failure starts one.
+    bool matchPasscode(const std::string& passcode, int& retriesLeft, bool& lockedOut,
+                       uint32_t& lockoutSeconds);
 
     bool passcodeSatisfiesPolicy(const EASPolicy * const policy) const;
 
@@ -63,8 +60,19 @@ public:
         FailureWeakPassword = -6,
         FailureSave = -7,
         FailureWeakPasswordRepeat = -8,
-        FailureWeakPasswordSequence = -9
+        FailureWeakPasswordSequence = -9,
+        FailureInvalidLockMode = -10,
+        FailureBadRequest = -11
     };
+
+    // The shortest PIN or password accepted, policy or not.
+    static const uint32_t s_minPasscodeLength = 4;
+
+    // Wrong passcodes accepted before the first lockout, the first lockout,
+    // and the longest one; each lockout after the first is twice as long.
+    static const uint32_t s_freeAttempts = 5;
+    static const uint32_t s_firstLockoutMs = 30 * 1000;
+    static const uint32_t s_maxLockoutMs = 60 * 60 * 1000;
 
     static bool cbDeviceWipe (LSHandle *sh, LSMessage *message, void *data);
 private:
@@ -73,30 +81,25 @@ private:
 
     void registerService();
 
-    int validatePasscode(const EASPolicy * const policy, const std::string& mode, 
+    int validatePasscode(const EASPolicy * const policy, const std::string& mode,
                           const std::string& passcode) const;
-    int validateStrength(QString passcode) const;
 
     void readLockMode();
-    std::string readPasscode() const;
-    void readDecryptedPasscode(std::string& passcode) const;
-    void safelyEraseString(std::string& str) const;
+    bool writePasscode(const std::string& mode, const std::string& hash) const;
+    int attemptsLeft() const;
 
     void eraseDevice();
 
     static bool keyManagerConnected(LSHandle* handle, LSMessage* msg, void* ctxt);
     void initKeyManager();
-    void updateKeyManager(const std::string& oldPasscode);
 
-private Q_SLOTS:
-
-    void slotPolicyChanged (const EASPolicy * const policy);
-
-private:
-
-    int m_numRetries;
     std::string m_lockMode;
     LSHandle* m_service;
+
+    // Consecutive wrong passcodes, and the monotonic time until which tries
+    // are refused. Reset by a right passcode or a new one.
+    uint32_t m_failures;
+    uint64_t m_lockedUntilMs;
 };
 
 #endif

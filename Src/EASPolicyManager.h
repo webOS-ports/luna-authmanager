@@ -23,13 +23,13 @@
 #ifndef EASPOLICYMANAGER_H
 #define EASPOLICYMANAGER_H
 
+#include <stdint.h>
+
 #include <string>
 #include <json.h>
-#include "PtrArray.h"
 
+#include <glib.h>
 #include <luna-service2/lunaservice.h>
-
-#include <QObject>
 
 class EASPolicyManager;
 class EASPolicy
@@ -57,13 +57,11 @@ public:
 
     // returns a platform supported value for m_inactivityInSeconds
     uint32_t maxInactivityInSeconds() const;
-    uint32_t clampInactivityInSeconds(uint32_t inactivityInSeconds) const;
 
     const std::string& id() const { return m_id; }
     
     json_object* toJSON() const;
     json_object* toNewJSON() const;
-    bool fromJSON(json_object* policy);
     bool fromNewJSON(json_object* policy);
 
     bool validMaxRetries() const { return m_passwordRequired && m_maxRetries > 1; }
@@ -92,7 +90,7 @@ private:
     uint32_t m_inactivityInSeconds;
     
     std::string m_id;
-    int m_revision;
+    int64_t m_revision;
     bool m_isDevicePolicy;
     bool m_isDeleted;
 
@@ -100,10 +98,8 @@ private:
 };
 
 
-class EASPolicyManager : public QObject
+class EASPolicyManager
 {
-    Q_OBJECT
-
 public:
 
     static EASPolicyManager* instance();
@@ -112,7 +108,7 @@ public:
     bool load();
 
     bool policyPending() const { return (m_aggregate != 0 && !m_isEnforced); }
-    const EASPolicy * const getPolicy() const { return m_aggregate; }
+    const EASPolicy* getPolicy() const { return m_aggregate; }
 
     std::string getPolicyState() const;
     json_object* getPolicyStatus() const;
@@ -130,7 +126,6 @@ public:
     void setDevicePolicy (json_object* policy = NULL);
     void updateDevicePolicy (json_object* policies);
     void watchSecurityPolicies();
-    bool importOldPolicySettings();
 
     static bool cbSecurityPolicy (LSHandle *sh, LSMessage *message, void *data);
     static bool cbWatchResponse (LSHandle *sh, LSMessage *message, void *data);
@@ -138,15 +133,21 @@ public:
     static bool cbDevicePolicySaved (LSHandle *sh, LSMessage *message, void *data);
     static bool cbTempPoliciesDeleted (LSHandle *sh, LSMessage *message, void *data);
 
-Q_SIGNALS:
-
-    void signalPolicyChanged(const EASPolicy* const);
-
 private:
 
     EASPolicyManager();
+    EASPolicyManager(const EASPolicyManager&) = delete;
+    EASPolicyManager& operator=(const EASPolicyManager&) = delete;
 
     void save();
+    void cancelWatch();
+
+    // Try again after db8 failed a call: it may not be up yet, or have
+    // restarted under us.
+    void retryLater(GSourceFunc what);
+    static gboolean retryDevicePolicy(gpointer data);
+    static gboolean retrySecurityPolicies(gpointer data);
+    static gboolean retryWatch(gpointer data);
 
     void notifyPolicyChanged();
 
@@ -156,8 +157,15 @@ private:
     uint32_t m_retriesLeft;
 
     EASPolicy* m_aggregate;
-    int m_lastRev;
+    int64_t m_lastRev;
     LSMessageToken m_callToken;
+
+    // A device policy put/merge is waiting for its reply, and another save
+    // was asked for meanwhile: it is sent when the reply comes, so a record
+    // with no id yet is never put twice.
+    bool m_saveInFlight;
+    bool m_saveAgain;
+    guint m_retrySource;
 };
 
 #endif

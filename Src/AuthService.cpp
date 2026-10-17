@@ -51,14 +51,14 @@ Set (or clear) the device passcode.
 \param passCode The secret for the chosen mode. A pattern is the nine dots
        visited, joined by index ("0-1-2-5-8"). Not required for "none".
 */
-static bool cbSetDevicePasscode(LSHandle* lsHandle, LSMessage *message, void *user_data)
+static bool cbSetDevicePasscode(LSHandle* lsHandle, LSMessage *message, void*)
 {
-    int errorCode = 0;
+    int errorCode = Security::FailureBadRequest;
     json_object* root = 0;
     json_object* prop = 0;
     std::string mode = "";
     std::string passcode = "";
-    std::string errorText = "";
+    std::string errorText = "lockMode (a string) is required";
 
     const char* payload = LSMessageGetPayload(message);
     if (!payload)
@@ -69,16 +69,20 @@ static bool cbSetDevicePasscode(LSHandle* lsHandle, LSMessage *message, void *us
         goto Done;
 
     // which mode are we setting?
-    prop = json_object_object_get(root, "lockMode");
-    if (!prop)
+    if (!json_object_object_get_ex(root, "lockMode", &prop) || !json_object_is_type(prop, json_type_string))
         goto Done;
     mode = json_object_get_string(prop);
 
     // should be a valid string if we are trying to set a pin/password
-    prop = json_object_object_get(root, "passCode");
-    if (prop)
+    if (json_object_object_get_ex(root, "passCode", &prop) && prop != 0) {
+        if (!json_object_is_type(prop, json_type_string)) {
+            errorText = "passCode must be a string";
+            goto Done;
+        }
         passcode = json_object_get_string(prop);
+    }
 
+    errorText = "";
     errorCode = Security::instance()->setPasscode(mode, passcode, errorText);
 
 Done:
@@ -102,6 +106,8 @@ Done:
     if (root)
         json_object_put(root);
 
+    passcode.replace(0, passcode.size(), passcode.size(), 0);
+
     return true;
 }
 
@@ -123,11 +129,17 @@ Check a passcode against the one set on the device.
 {
     "returnValue": boolean,
     "lockedOut": boolean,
-    "retriesLeft": int
+    "retriesLeft": int,
+    "lockoutSeconds": int
 }
 \endcode
+
+After five wrong passcodes in a row each further one locks matching out for
+twice as long as the last (30 seconds first, an hour at most). While locked
+out every try is refused unchecked, with lockedOut true and lockoutSeconds
+saying how long is left; the failure that starts a lockout reports it too.
 */
-static bool cbMatchDevicePasscode(LSHandle* lsHandle, LSMessage *message, void *user_data)
+static bool cbMatchDevicePasscode(LSHandle* lsHandle, LSMessage *message, void*)
 {
     bool success = false;
     json_object* root = 0;
@@ -135,6 +147,7 @@ static bool cbMatchDevicePasscode(LSHandle* lsHandle, LSMessage *message, void *
     std::string passcode = "";
     int retries = 0;
     bool lockedOut = false;
+    uint32_t lockoutSeconds = 0;
 
     const char* payload = LSMessageGetPayload(message);
     if (!payload)
@@ -145,12 +158,12 @@ static bool cbMatchDevicePasscode(LSHandle* lsHandle, LSMessage *message, void *
         goto Done;
 
     // get passcode sent by user
-    key = json_object_object_get(root, "passCode");
-    if (!key)
+    if (!json_object_object_get_ex(root, "passCode", &key) || !json_object_is_type(key, json_type_string))
         goto Done; // bad arguments passed in
     passcode = json_object_get_string(key);
 
-    success = Security::instance()->matchPasscode(passcode, retries, lockedOut);
+    success = Security::instance()->matchPasscode(passcode, retries, lockedOut, lockoutSeconds);
+    passcode.replace(0, passcode.size(), passcode.size(), 0);
 
 Done:
 
@@ -159,6 +172,8 @@ Done:
     if (!success) {
         json_object_object_add(reply, "lockedOut", json_object_new_boolean(lockedOut));
         json_object_object_add(reply, "retriesLeft", json_object_new_int(retries));
+        if (lockedOut)
+            json_object_object_add(reply, "lockoutSeconds", json_object_new_int64(lockoutSeconds));
     }
 
     LSError lsError;
@@ -188,7 +203,7 @@ subscribers are notified whenever the mode or policy changes.
 }
 \endcode
 */
-static bool cbGetDeviceLockMode(LSHandle* lsHandle, LSMessage *message, void *user_data)
+static bool cbGetDeviceLockMode(LSHandle* lsHandle, LSMessage *message, void*)
 {
     bool success = true;
     bool subscribed = false;
@@ -233,7 +248,7 @@ static bool cbGetDeviceLockMode(LSHandle* lsHandle, LSMessage *message, void *us
 
 Get the aggregate Exchange ActiveSync security policy and its status.
 */
-static bool cbGetSecurityPolicy(LSHandle* lsHandle, LSMessage* message, void* user_data)
+static bool cbGetSecurityPolicy(LSHandle* lsHandle, LSMessage* message, void*)
 {
     bool success = false;
     json_object* json = json_object_new_object();
@@ -264,11 +279,11 @@ static bool cbGetSecurityPolicy(LSHandle* lsHandle, LSMessage* message, void* us
 }
 
 static LSMethod s_methods[]  = {
-    { "setDevicePasscode",   cbSetDevicePasscode },
-    { "matchDevicePasscode", cbMatchDevicePasscode },
-    { "getDeviceLockMode",   cbGetDeviceLockMode },
-    { "getSecurityPolicy",   cbGetSecurityPolicy },
-    { 0, 0 },
+    { "setDevicePasscode",   cbSetDevicePasscode,   LUNA_METHOD_FLAGS_NONE },
+    { "matchDevicePasscode", cbMatchDevicePasscode, LUNA_METHOD_FLAGS_NONE },
+    { "getDeviceLockMode",   cbGetDeviceLockMode,   LUNA_METHOD_FLAGS_NONE },
+    { "getSecurityPolicy",   cbGetSecurityPolicy,   LUNA_METHOD_FLAGS_NONE },
+    { 0, 0, LUNA_METHOD_FLAGS_NONE },
 };
 
 AuthService* AuthService::s_instance = NULL;
@@ -307,6 +322,15 @@ bool AuthService::registerName(const char* name, LSHandle** handle)
 Failed:
     g_warning("Failed registering %s: %s", name, lsError.message);
     LSErrorFree(&lsError);
+
+    // A name registered but not attached would hold the name with nothing
+    // answering on it.
+    if (*handle) {
+        LSErrorInit(&lsError);
+        if (!LSUnregister(*handle, &lsError))
+            LSErrorFree(&lsError);
+        *handle = NULL;
+    }
     return false;
 }
 
@@ -320,8 +344,7 @@ bool AuthService::init(GMainLoop* mainLoop)
     // The modern alias. Registration failure here is logged but not fatal:
     // a role file that predates the name must not take the passcode service
     // down with it.
-    if (!registerName("com.webos.service.auth", &m_authService))
-        m_authService = NULL;
+    (void) registerName("com.webos.service.auth", &m_authService);
 
     return true;
 }
