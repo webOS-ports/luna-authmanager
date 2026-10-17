@@ -33,7 +33,7 @@ of the start-up (`boot()`).
 | `test_passcode.cpp` | the version 2 file (yescrypt, salted, 0600); hashes starting with NUL no longer matching each other; luna-sysmgr's format matched and moved to version 2; the strength rules; unknown lock modes; save failures (unwritable directory, a short write) leaving the old passcode; a stale temporary file or link not followed |
 | `test_lockout.cpp` | five free tries, then 30 s doubling to an hour; the right code refused while locked out; the count reset by a right or new passcode; the lockout under a policy without a retry limit |
 | `test_policy.cpp` | a db8 error not taken for "no device policy"; `results` that is not an array; one device-policy put at a time; the watch cancelled when it fires or fails; negative policy values clamped; retries kept from the device record; the wipe after the last EAS retry; policy rules on top of the baseline |
-| `test_methods.cpp` | malformed requests refused; both bus names; hostile payloads; the ACG files: the passcode methods only in `auth.passcode`, and the keymanager name allowed to call storaged's wipe |
+| `test_methods.cpp` | malformed requests refused; both bus names; hostile payloads; the ACG files: the passcode methods only in `auth.passcode` (and matching alone in `auth.verify`), and the keymanager name allowed to call storaged's wipe |
 
 Build and run on the host:
 

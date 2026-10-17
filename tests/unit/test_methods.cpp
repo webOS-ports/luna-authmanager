@@ -99,7 +99,9 @@ std::set<std::string> groupMethods(json_object* api, const char* group)
 } // namespace
 
 // Setting or matching the passcode is for the lock screen and Settings
-// only, not for whatever app holds luna-sysmgr.operation.
+// only, not for whatever app holds luna-sysmgr.operation. auth.verify
+// matches, and only that: an app that asks for the passcode to let its
+// user in has no business setting or clearing it.
 TEST(Acg, PasscodeMethodsHaveAGroupOfTheirOwn)
 {
     json_object* api = sysbusFile("luna-authmanager.api.json");
@@ -110,8 +112,11 @@ TEST(Acg, PasscodeMethodsHaveAGroupOfTheirOwn)
         for (const char* m : { "setDevicePasscode", "matchDevicePasscode" })
             EXPECT_EQ(passcode.count(std::string(name) + "/" + m), 1u) << name << "/" << m;
 
+    std::set<std::string> verify = groupMethods(api, "auth.verify");
+    EXPECT_EQ(verify, std::set<std::string>{ "com.webos.service.auth/matchDevicePasscode" });
+
     json_object_object_foreach(api, group, methods) {
-        if (std::string(group) == "auth.passcode")
+        if (std::string(group) == "auth.passcode" || std::string(group) == "auth.verify")
             continue;
         for (size_t i = 0; i < json_object_array_length(methods); ++i) {
             std::string m = json_object_get_string(json_object_array_get_idx(methods, i));
@@ -124,6 +129,8 @@ TEST(Acg, PasscodeMethodsHaveAGroupOfTheirOwn)
     ASSERT_NE(groups, nullptr);
     json_object* trust = nullptr;
     ASSERT_TRUE(json_object_object_get_ex(groups, "auth.passcode", &trust));
+    EXPECT_STREQ(json_object_to_json_string(trust), "[ \"oem\" ]");
+    ASSERT_TRUE(json_object_object_get_ex(groups, "auth.verify", &trust));
     EXPECT_STREQ(json_object_to_json_string(trust), "[ \"oem\" ]");
     json_object_put(groups);
 }

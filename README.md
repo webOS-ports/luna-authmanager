@@ -43,6 +43,10 @@ Who may call them is set by ACG groups (`files/sysbus`):
   the Settings screen-lock page and the email app (whose Enyo authlib asks
   for a device PIN when an Exchange policy needs one). Nothing else: an app
   that may set the passcode may also clear it.
+* `auth.verify` — `matchDevicePasscode` on `com.webos.service.auth`, and
+  nothing else: for an app that lets its user in with the screen lock
+  passcode (the Authenticator's lock) without being able to set or clear
+  it. Its tries count with the lock screen's and share their lockout.
 * `auth.query` and `luna-sysmgr.operation` — the two read-only methods.
 
 ### Passcodes
