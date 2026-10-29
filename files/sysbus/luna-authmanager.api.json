@@ -8,6 +8,13 @@
     "auth.verify": [
         "com.webos.service.auth/matchDevicePasscode"
     ],
+    "auth.unlocktoken": [
+        "com.webos.service.auth/consumeUnlockToken"
+    ],
+    "auth.biometric": [
+        "com.webos.service.auth/issueBiometricToken",
+        "com.webos.service.auth/reportBiometricFailure"
+    ],
     "auth.query": [
         "com.palm.systemmanager/getDeviceLockMode",
         "com.palm.systemmanager/getSecurityPolicy",

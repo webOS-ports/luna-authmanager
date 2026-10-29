@@ -39,14 +39,32 @@ struct Reply {
     int retriesLeft = -1;
     int errorCode = 0;
     int lockoutSeconds = -1;
+    std::string unlockToken;
+    bool valid = false;
+    bool hasBiometricAllowed = false;
+    bool biometricAllowed = false;
+    bool passcodeRequired = false;
     std::string raw;
 };
 
 Reply parseReply(const fakebus::MethodResult& r);
 Reply callAuth(const char* method, const std::string& payload,
                const char* service = "com.palm.systemmanager");
+// As a client registered as sender, on com.webos.service.auth.
+Reply callAuthAs(const char* method, const std::string& payload, const std::string& sender);
+
+// Sets the passcode as Settings does: with the one set last through this
+// helper as currentPasscode, when there is one.
 Reply setPasscode(const std::string& mode, const std::string& code);
-Reply matchPasscode(const std::string& code);
+// With exactly this currentPasscode (null: none given).
+Reply setPasscodeWith(const std::string& mode, const std::string& code, const char* current);
+// Forget what setPasscode() remembers, e.g. after writing a file by hand.
+void rememberPasscode(const std::string& code);
+Reply matchPasscode(const std::string& code, const std::string& sender = "com.example.test");
+
+// consumeUnlockToken as caller, for requester.
+Reply consumeToken(const std::string& caller, const std::string& token,
+                   const std::string& requester, const char* purpose = "unlock");
 
 // Answer the last call to uri (as db8 would). False if there was none.
 bool replyLast(const std::string& uri, const std::string& payload);

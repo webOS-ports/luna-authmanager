@@ -87,6 +87,28 @@ static std::string passcodeFile()
     return std::string(authDataDir()) + "/.passcode";
 }
 
+/*
+ * The lockout state, apart from the passcode so that a wrong try never
+ * rewrites the passcode file:
+ *
+ *   {"version": 1, "bootId": "<boot_id>", "failures": 7,
+ *    "lockedUntilMono": <ms>, "lockedUntilWall": <ms>, "lockoutMs": <ms>,
+ *    "savedAtWall": <ms>, "passcodeBootId": "<boot_id>",
+ *    "passcodeAtWall": <ms>, "biometricFailures": 2}
+ *
+ * Within one boot the monotonic deadline holds, so setting the clock does
+ * nothing to it. After a reboot the monotonic clock has started again, and
+ * what is left is the wall-clock deadline: never more than the lockout was
+ * long, and the whole of it if the clock now reads earlier than when the
+ * file was written (a reset RTC must not end it early or make it endless).
+ */
+static const int s_lockoutVersion = 1;
+
+static std::string lockoutFile()
+{
+    return std::string(authStateDir()) + "/lockout";
+}
+
 // A comparison whose time does not depend on where the strings differ.
 static bool equalConstantTime(const std::string& a, const std::string& b)
 {
@@ -251,8 +273,14 @@ Security::Security()
     : m_service(0)
     , m_failures(0)
     , m_lockedUntilMs(0)
+    , m_lockoutMs(0)
+    , m_bootId(bootId())
+    , m_passcodeThisBoot(false)
+    , m_passcodeAtWallMs(0)
+    , m_biometricFailures(0)
 {
     readLockMode();
+    loadLockoutState();
 
     registerService();
 }
@@ -331,8 +359,32 @@ void Security::initKeyManager()
     json_object_put(payload);
 }
 
-int Security::setPasscode(const std::string& mode, const std::string& passcode, std::string& errorText)
+bool Security::currentPasscodeRequired() const
 {
+    if (m_lockMode == "none")
+        return false;
+
+    int version = 0;
+    std::string stored;
+    if (!readStoredPasscode(m_lockMode, version, stored))
+        return false;
+
+    const EASPolicyManager* pm = EASPolicyManager::instance();
+    const EASPolicy * const policy = pm->getPolicy();
+    if (pm->policyPending() && policy != 0 && policy->passwordRequired())
+        return false;
+
+    return true;
+}
+
+int Security::setPasscode(const std::string& mode, const std::string& passcode,
+                          const std::string* currentPasscode, std::string& errorText,
+                          int& retriesLeft, bool& lockedOut, uint32_t& lockoutSeconds)
+{
+    retriesLeft = attemptsLeft();
+    lockedOut = false;
+    lockoutSeconds = 0;
+
     if (mode != "none" && !isStoredLockMode(mode)) {
         errorText = "Unknown lock mode";
         return FailureInvalidLockMode;
@@ -349,6 +401,19 @@ int Security::setPasscode(const std::string& mode, const std::string& passcode, 
     if (errorCode < 0) {
         errorText = failureText(errorCode, mode);
         return errorCode;
+    }
+
+    // Checked after the new passcode passed its rules, so a weak new one
+    // does not cost a try. A wrong one counts like a wrong unlock.
+    if (currentPasscodeRequired()) {
+        if (!currentPasscode || currentPasscode->empty()) {
+            errorText = "The current passcode is required";
+            return FailureCurrentPasscode;
+        }
+        if (!matchPasscode(*currentPasscode, retriesLeft, lockedOut, lockoutSeconds)) {
+            errorText = lockedOut ? "Too many wrong passcodes" : "The current passcode is wrong";
+            return FailureCurrentPasscode;
+        }
     }
 
     if (mode == "none") {
@@ -375,9 +440,12 @@ int Security::setPasscode(const std::string& mode, const std::string& passcode, 
 
     m_lockMode = mode;
 
-    // A new passcode is not guessed at yet.
-    m_failures = 0;
-    m_lockedUntilMs = 0;
+    // A new passcode is not guessed at yet, and whoever set it knows it. A
+    // token won with the old one is not good for the new one.
+    passcodeProven();
+    m_token.clear();
+    saveLockoutState();
+    retriesLeft = attemptsLeft();
 
     // inform subscribers of the new mode/policy
     AuthService::instance()->postDeviceLockMode();
@@ -392,6 +460,8 @@ bool Security::matchPasscode(const std::string& passcode, int& retriesLeft, bool
     const EASPolicy * const policy = pm->getPolicy();
     const bool policyActive = policy != 0 && !pm->policyPending();
     const uint64_t now = monotonicMs();
+
+    const bool biometricBefore = biometricAllowed();
 
     lockedOut = false;
     lockoutSeconds = 0;
@@ -422,13 +492,14 @@ bool Security::matchPasscode(const std::string& passcode, int& retriesLeft, bool
                 g_warning("%s: passcode left in the old format", __PRETTY_FUNCTION__);
         }
 
-        m_failures = 0;
-        m_lockedUntilMs = 0;
+        passcodeProven();
+        saveLockoutState();
 
         // reset allowable passcode failures
         if (policyActive)
             pm->resetRetries();
         retriesLeft = attemptsLeft();
+        postIfBiometricChanged(biometricBefore);
         return true;
     }
 
@@ -444,9 +515,13 @@ bool Security::matchPasscode(const std::string& passcode, int& retriesLeft, bool
             delay = s_maxLockoutMs;
 
         m_lockedUntilMs = now + delay;
+        m_lockoutMs = delay;
         lockedOut = true;
         lockoutSeconds = (uint32_t) (delay / 1000);
     }
+    saveLockoutState();
+    // A passcode lockout holds biometrics off too.
+    postIfBiometricChanged(biometricBefore);
 
     if (policyActive && policy->validMaxRetries()) {
         retriesLeft = pm->decrementRetries();
@@ -500,17 +575,11 @@ void Security::readLockMode()
     }
 }
 
-// Write the passcode file in full under a temporary name, then move it into
-// place, so the file is always either the old one or the new one.
-bool Security::writePasscode(const std::string& mode, const std::string& hash) const
+// Write file (in dir) in full under a temporary name, 0600, then move it
+// into place, so the file is always either the old one or the new one.
+static bool writeFileAtomic(const char* dir, const std::string& file, const char* buf)
 {
-    const std::string file = passcodeFile();
     const std::string tmp = file + ".tmp";
-
-    json_object* saved = json_object_new_object();
-    json_object_object_add(saved, "version", json_object_new_int(s_passcodeVersion));
-    json_object_object_add(saved, mode.c_str(), json_object_new_string(hash.c_str()));
-    const char* buf = json_object_to_json_string(saved);
 
     // A temporary file left from before may have other permissions, or be a
     // link: start from none, and use nothing that appears in between.
@@ -528,19 +597,189 @@ bool Security::writePasscode(const std::string& mode, const std::string& hash) c
 
     if (ok) {
         // The rename is only durable once the directory is.
-        int dir = ::open(authDataDir(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (dir != -1) {
-            ::fsync(dir);
-            ::close(dir);
+        int d = ::open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (d != -1) {
+            ::fsync(d);
+            ::close(d);
         }
     }
     else {
-        g_warning("%s: cannot save '%s': %s", __PRETTY_FUNCTION__, file.c_str(), g_strerror(errno));
+        g_warning("%s: cannot save '%s': %s", __func__, file.c_str(), g_strerror(errno));
         ::unlink(tmp.c_str());
     }
+    return ok;
+}
+
+bool Security::writePasscode(const std::string& mode, const std::string& hash) const
+{
+    json_object* saved = json_object_new_object();
+    json_object_object_add(saved, "version", json_object_new_int(s_passcodeVersion));
+    json_object_object_add(saved, mode.c_str(), json_object_new_string(hash.c_str()));
+
+    bool ok = writeFileAtomic(authDataDir(), passcodeFile(), json_object_to_json_string(saved));
 
     json_object_put(saved);
     return ok;
+}
+
+static uint64_t getUint64(json_object* root, const char* key)
+{
+    json_object* v = 0;
+    if (!json_object_object_get_ex(root, key, &v) || !json_object_is_type(v, json_type_int))
+        return 0;
+    int64_t n = json_object_get_int64(v);
+    return n > 0 ? (uint64_t) n : 0;
+}
+
+static std::string getString(json_object* root, const char* key)
+{
+    json_object* v = 0;
+    if (!json_object_object_get_ex(root, key, &v) || !json_object_is_type(v, json_type_string))
+        return "";
+    return json_object_get_string(v);
+}
+
+void Security::loadLockoutState()
+{
+    const std::string file = lockoutFile();
+    int fd = ::open(file.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd == -1 && errno == ENOENT)
+        return;   // nothing saved yet
+
+    json_object* root = fd != -1 ? json_object_from_fd(fd) : 0;
+    if (fd != -1)
+        ::close(fd);
+    if (!root || !json_object_is_type(root, json_type_object)) {
+        // Saves are atomic, so this is not a torn write. Do not take it as
+        // a clean slate: one more wrong passcode starts a lockout.
+        g_warning("%s: '%s' is unreadable, counting the free tries as spent", __func__, file.c_str());
+        if (root)
+            json_object_put(root);
+        m_failures = s_freeAttempts;
+        return;
+    }
+
+    uint64_t failures = getUint64(root, "failures");
+    m_failures = failures > UINT32_MAX ? UINT32_MAX : (uint32_t) failures;
+
+    uint64_t lockoutMs = getUint64(root, "lockoutMs");
+    if (lockoutMs > s_maxLockoutMs)
+        lockoutMs = s_maxLockoutMs;
+    m_lockoutMs = lockoutMs;
+
+    const uint64_t nowMono = monotonicMs();
+    const std::string savedBoot = getString(root, "bootId");
+    if (!m_bootId.empty() && savedBoot == m_bootId) {
+        // The daemon restarted within this boot: the monotonic deadline
+        // stands, but no further off than the lockout was long.
+        uint64_t until = getUint64(root, "lockedUntilMono");
+        if (until > nowMono + lockoutMs)
+            until = nowMono + lockoutMs;
+        m_lockedUntilMs = until;
+    }
+    else {
+        const uint64_t nowWall = realtimeMs();
+        const uint64_t untilWall = getUint64(root, "lockedUntilWall");
+        uint64_t left;
+        if (nowWall < getUint64(root, "savedAtWall"))
+            left = untilWall != 0 ? lockoutMs : 0;   // the clock went back
+        else
+            left = untilWall > nowWall ? untilWall - nowWall : 0;
+        if (left > lockoutMs)
+            left = lockoutMs;
+        m_lockedUntilMs = left != 0 ? nowMono + left : 0;
+    }
+
+    m_passcodeThisBoot = !m_bootId.empty() && getString(root, "passcodeBootId") == m_bootId;
+    m_passcodeAtWallMs = getUint64(root, "passcodeAtWall");
+    uint64_t bio = getUint64(root, "biometricFailures");
+    m_biometricFailures = bio > UINT32_MAX ? UINT32_MAX : (uint32_t) bio;
+
+    json_object_put(root);
+}
+
+void Security::saveLockoutState() const
+{
+    if (::mkdir(authStateDir(), S_IRWXU) != 0 && errno != EEXIST) {
+        g_warning("%s: cannot create '%s': %s", __func__, authStateDir(), g_strerror(errno));
+        return;
+    }
+
+    const uint64_t nowMono = monotonicMs();
+    const uint64_t nowWall = realtimeMs();
+    const uint64_t left = m_lockedUntilMs > nowMono ? m_lockedUntilMs - nowMono : 0;
+
+    json_object* o = json_object_new_object();
+    json_object_object_add(o, "version", json_object_new_int(s_lockoutVersion));
+    json_object_object_add(o, "bootId", json_object_new_string(m_bootId.c_str()));
+    json_object_object_add(o, "failures", json_object_new_int64(m_failures));
+    json_object_object_add(o, "lockedUntilMono", json_object_new_int64((int64_t) m_lockedUntilMs));
+    json_object_object_add(o, "lockedUntilWall", json_object_new_int64(left != 0 ? (int64_t) (nowWall + left) : 0));
+    json_object_object_add(o, "lockoutMs", json_object_new_int64((int64_t) m_lockoutMs));
+    json_object_object_add(o, "savedAtWall", json_object_new_int64((int64_t) nowWall));
+    json_object_object_add(o, "passcodeBootId",
+                           json_object_new_string(m_passcodeThisBoot ? m_bootId.c_str() : ""));
+    json_object_object_add(o, "passcodeAtWall", json_object_new_int64((int64_t) m_passcodeAtWallMs));
+    json_object_object_add(o, "biometricFailures", json_object_new_int64(m_biometricFailures));
+
+    (void) writeFileAtomic(authStateDir(), lockoutFile(), json_object_to_json_string(o));
+    json_object_put(o);
+}
+
+// The passcode was just shown (matched, or set): the count starts again,
+// and biometrics may stand in for it for a while.
+void Security::passcodeProven()
+{
+    m_failures = 0;
+    m_lockedUntilMs = 0;
+    m_lockoutMs = 0;
+    m_passcodeThisBoot = true;
+    m_passcodeAtWallMs = realtimeMs();
+    m_biometricFailures = 0;
+}
+
+void Security::postIfBiometricChanged(bool before) const
+{
+    if (biometricAllowed() != before)
+        AuthService::instance()->postDeviceLockMode();
+}
+
+bool Security::biometricAllowed() const
+{
+    if (m_lockMode == "none" || !m_passcodeThisBoot)
+        return false;
+    if (m_biometricFailures >= s_maxBiometricFailures)
+        return false;
+    if (monotonicMs() < m_lockedUntilMs)
+        return false;
+
+    const uint64_t now = realtimeMs();
+    if (now < m_passcodeAtWallMs || now - m_passcodeAtWallMs >= s_biometricPasscodeMaxAgeMs)
+        return false;
+
+    return true;
+}
+
+bool Security::biometricMatched()
+{
+    if (!biometricAllowed())
+        return false;
+
+    if (m_biometricFailures != 0) {
+        m_biometricFailures = 0;
+        saveLockoutState();
+    }
+    return true;
+}
+
+bool Security::biometricFailed()
+{
+    const bool before = biometricAllowed();
+    if (m_biometricFailures < UINT32_MAX)
+        m_biometricFailures++;
+    saveLockoutState();
+    postIfBiometricChanged(before);
+    return biometricAllowed();
 }
 
 void Security::eraseDevice()

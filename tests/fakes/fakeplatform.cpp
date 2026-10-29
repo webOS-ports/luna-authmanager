@@ -20,11 +20,19 @@
 
 #include "Platform.h"
 
+#include <sys/random.h>
+
 namespace {
 
 std::string s_dataDir = ".";
+std::string s_stateDir = "./state";
 // Not 0: the daemon's "locked out until" starts at 0.
 uint64_t s_nowMs = 1000000;
+// 2026-10-29T00:00:00Z.
+uint64_t s_wallMs = 1793232000000ULL;
+std::string s_bootId = "8a1c7e0e-0000-4000-8000-000000000001";
+unsigned s_boots = 1;
+bool s_failRandom = false;
 
 }
 
@@ -35,9 +43,43 @@ void setDataDir(const std::string& dir)
     s_dataDir = dir;
 }
 
+void setStateDir(const std::string& dir)
+{
+    s_stateDir = dir;
+}
+
 void advanceMs(uint64_t ms)
 {
     s_nowMs += ms;
+    s_wallMs += ms;
+}
+
+void setRealtimeMs(uint64_t ms)
+{
+    s_wallMs = ms;
+}
+
+uint64_t realtimeNowMs()
+{
+    return s_wallMs;
+}
+
+void reboot()
+{
+    ++s_boots;
+    s_bootId = "8a1c7e0e-0000-4000-8000-" + std::to_string(100000000000ULL + s_boots);
+    // Less than before: a monotonic deadline carried over would look far off.
+    s_nowMs = 5000 + s_boots;
+}
+
+void setBootId(const std::string& id)
+{
+    s_bootId = id;
+}
+
+void failRandom(bool fail)
+{
+    s_failRandom = fail;
 }
 
 } // namespace fakeplatform
@@ -50,4 +92,26 @@ const char* authDataDir()
 uint64_t monotonicMs()
 {
     return s_nowMs;
+}
+
+const char* authStateDir()
+{
+    return s_stateDir.c_str();
+}
+
+uint64_t realtimeMs()
+{
+    return s_wallMs;
+}
+
+std::string bootId()
+{
+    return s_bootId;
+}
+
+bool randomBytes(void* buf, size_t len)
+{
+    if (s_failRandom)
+        return false;
+    return ::getrandom(buf, len, 0) == (ssize_t) len;
 }

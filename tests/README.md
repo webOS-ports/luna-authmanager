@@ -20,10 +20,11 @@ stand-ins instead of what the device has:
   and reply; a test answers calls as db8 or storaged would
   (`fakebus::reply`), and calls the daemon's methods as a client
   (`callMethod`). The test binary does not link libluna-service2.
-- `fakes/fakeplatform.cpp`: `Src/Platform.h`. The data directory is a
-  fresh directory per test, and the monotonic clock only moves when a test
-  moves it (`fakeplatform::advanceMs`), so lockouts are tested without
-  waiting.
+- `fakes/fakeplatform.cpp`: `Src/Platform.h`. The data and state
+  directories are fresh per test, the clocks only move when a test moves
+  them (`fakeplatform::advanceMs`, `setRealtimeMs`), and a test can reboot
+  (`fakeplatform::reboot`: a new boot id, the monotonic clock from the
+  start), so lockouts are tested without waiting.
 
 Each test starts the singletons as `Src/Main.cpp` does and plays db8's side
 of the start-up (`boot()`).
@@ -33,7 +34,11 @@ of the start-up (`boot()`).
 | `test_passcode.cpp` | the version 2 file (yescrypt, salted, 0600); hashes starting with NUL no longer matching each other; luna-sysmgr's format matched and moved to version 2; the strength rules; unknown lock modes; save failures (unwritable directory, a short write) leaving the old passcode; a stale temporary file or link not followed |
 | `test_lockout.cpp` | five free tries, then 30 s doubling to an hour; the right code refused while locked out; the count reset by a right or new passcode; the lockout under a policy without a retry limit |
 | `test_policy.cpp` | a db8 error not taken for "no device policy"; `results` that is not an array; one device-policy put at a time; the watch cancelled when it fires or fails; negative policy values clamped; retries kept from the device record; the wipe after the last EAS retry; policy rules on top of the baseline |
-| `test_methods.cpp` | malformed requests refused; both bus names; hostile payloads; the ACG files: the passcode methods only in `auth.passcode` (and matching alone in `auth.verify`), and the keymanager name allowed to call storaged's wipe |
+| `test_change.cpp` | the current passcode required to change or remove one, counted as a try, refused during a lockout; a weak new one costing no try; the pending-EAS-policy exception, which can replace but not remove |
+| `test_token.cpp` | the unlock token: 32 hex digits, never repeated, once, 30 s, bound to the asker; only `com.palm.display` spends it to unlock, only the biometric services to enrol; a new passcode voids it; no name or no randomness, no token |
+| `test_persist.cpp` | the lockout file (0600 in a 0700 directory); count and deadline across a restart and a reboot; a clock set back owing the whole lockout; an overlong deadline cut; an unreadable file spending the free tries; an unwritable directory not fatal |
+| `test_biometric.cpp` | biometrics not before the passcode after a boot, nor 72 h after it, nor during a lockout, nor after five rejections in a row (saved); only the factor's own service speaking for it; biometric tokens unlock-only and bound |
+| `test_methods.cpp` | malformed requests refused; both bus names; hostile payloads; the ACG files: the passcode methods only in `auth.passcode` (and matching alone in `auth.verify`), the token methods in `auth.unlocktoken` and `auth.biometric` alone, and the keymanager name allowed to call storaged's wipe |
 
 Build and run on the host:
 

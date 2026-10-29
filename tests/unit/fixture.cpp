@@ -34,6 +34,7 @@ const char* const kNoPolicies = "{\"returnValue\":true,\"results\":[]}";
 const char* const kDeleted = "{\"returnValue\":true,\"count\":0}";
 
 static GMainLoop* s_loop = nullptr;
+static std::string s_lastSet;
 
 Reply parseReply(const fakebus::MethodResult& r)
 {
@@ -56,6 +57,16 @@ Reply parseReply(const fakebus::MethodResult& r)
         out.errorCode = json_object_get_int(v);
     if (json_object_object_get_ex(o, "lockoutSeconds", &v))
         out.lockoutSeconds = json_object_get_int(v);
+    if (json_object_object_get_ex(o, "unlockToken", &v) && json_object_is_type(v, json_type_string))
+        out.unlockToken = json_object_get_string(v);
+    if (json_object_object_get_ex(o, "valid", &v))
+        out.valid = json_object_get_boolean(v);
+    if (json_object_object_get_ex(o, "biometricAllowed", &v)) {
+        out.hasBiometricAllowed = true;
+        out.biometricAllowed = json_object_get_boolean(v);
+    }
+    if (json_object_object_get_ex(o, "passcodeRequired", &v))
+        out.passcodeRequired = json_object_get_boolean(v);
     json_object_put(o);
     return out;
 }
@@ -65,14 +76,46 @@ Reply callAuth(const char* method, const std::string& payload, const char* servi
     return parseReply(fakebus::callMethod(service, "/", method, payload));
 }
 
-Reply setPasscode(const std::string& mode, const std::string& code)
+Reply callAuthAs(const char* method, const std::string& payload, const std::string& sender)
 {
-    return callAuth("setDevicePasscode", "{\"lockMode\":\"" + mode + "\",\"passCode\":\"" + code + "\"}");
+    return parseReply(fakebus::callMethod("com.webos.service.auth", "/", method, payload, sender));
 }
 
-Reply matchPasscode(const std::string& code)
+Reply setPasscodeWith(const std::string& mode, const std::string& code, const char* current)
 {
-    return callAuth("matchDevicePasscode", "{\"passCode\":\"" + code + "\"}");
+    std::string p = "{\"lockMode\":\"" + mode + "\",\"passCode\":\"" + code + "\"";
+    if (current)
+        p += std::string(",\"currentPasscode\":\"") + current + "\"";
+    p += "}";
+    Reply r = callAuth("setDevicePasscode", p);
+    if (r.returnValue)
+        s_lastSet = mode == "none" ? "" : code;
+    return r;
+}
+
+Reply setPasscode(const std::string& mode, const std::string& code)
+{
+    std::string current = s_lastSet;
+    return setPasscodeWith(mode, code, current.empty() ? nullptr : current.c_str());
+}
+
+void rememberPasscode(const std::string& code)
+{
+    s_lastSet = code;
+}
+
+Reply matchPasscode(const std::string& code, const std::string& sender)
+{
+    return parseReply(fakebus::callMethod("com.palm.systemmanager", "/", "matchDevicePasscode",
+                                          "{\"passCode\":\"" + code + "\"}", sender));
+}
+
+Reply consumeToken(const std::string& caller, const std::string& token,
+                   const std::string& requester, const char* purpose)
+{
+    return callAuthAs("consumeUnlockToken",
+                      "{\"token\":\"" + token + "\",\"requester\":\"" + requester +
+                      "\",\"purpose\":\"" + purpose + "\"}", caller);
 }
 
 bool replyLast(const std::string& uri, const std::string& payload)
@@ -123,6 +166,12 @@ void AuthTest::SetUp()
     ASSERT_NE(mkdtemp(buf.data()), nullptr);
     dir = buf.data();
     fakeplatform::setDataDir(dir);
+    // Not made here: the daemon has to make it.
+    fakeplatform::setStateDir(dir + "/state");
+    fakeplatform::failRandom(false);
+    // Every test on a boot of its own, with a boot id.
+    fakeplatform::reboot();
+    s_lastSet.clear();
     fakebus::reset();
 }
 

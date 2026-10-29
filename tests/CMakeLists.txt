@@ -34,7 +34,11 @@ add_executable(authmanager-tests
     unit/test_passcode.cpp
     unit/test_lockout.cpp
     unit/test_methods.cpp
-    unit/test_policy.cpp)
+    unit/test_policy.cpp
+    unit/test_change.cpp
+    unit/test_token.cpp
+    unit/test_persist.cpp
+    unit/test_biometric.cpp)
 
 target_include_directories(authmanager-tests PRIVATE fakes unit)
 target_compile_options(authmanager-tests PRIVATE -Wextra)
