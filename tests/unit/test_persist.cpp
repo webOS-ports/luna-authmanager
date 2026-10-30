@@ -108,6 +108,52 @@ TEST_F(AuthTest, ALockoutSurvivesAReboot)
     EXPECT_TRUE(matchPasscode("7351").returnValue);
 }
 
+// The lock screen asks getDeviceLockMode when it opens; after a reboot that
+// is before any try, so the lockout has to be there already.
+TEST_F(AuthTest, ALockoutIsReportedBeforeATryAfterAReboot)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    failFive();
+    fakeplatform::advanceMs(10 * 1000);
+
+    stop();
+    fakeplatform::reboot();
+    start();
+    boot();
+    Reply r = callAuth("getDeviceLockMode", "{}");
+    EXPECT_TRUE(r.returnValue);
+    EXPECT_TRUE(r.lockedOut);
+    EXPECT_EQ(r.lockoutSeconds, 20);
+
+    // Rounded up, as matchDevicePasscode does: 0.5 s left is still 1.
+    fakeplatform::advanceMs(19 * 1000 + 500);
+    r = callAuth("getDeviceLockMode", "{}");
+    EXPECT_TRUE(r.lockedOut);
+    EXPECT_EQ(r.lockoutSeconds, 1);
+
+    fakeplatform::advanceMs(500);
+    r = callAuth("getDeviceLockMode", "{}");
+    EXPECT_FALSE(r.lockedOut);
+    EXPECT_EQ(r.lockoutSeconds, 0);
+    EXPECT_TRUE(matchPasscode("7351").returnValue);
+}
+
+TEST_F(AuthTest, NoLockoutIsReportedWithoutOne)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    for (int i = 0; i < 4; ++i)
+        matchPasscode("0482");
+
+    Reply r = callAuth("getDeviceLockMode", "{}");
+    EXPECT_TRUE(r.returnValue);
+    EXPECT_FALSE(r.lockedOut);
+    EXPECT_EQ(r.lockoutSeconds, 0);
+}
+
 // After a reboot that outlasted the lockout, the next wrong code starts the
 // next, longer one: the count did not start again.
 TEST_F(AuthTest, ARebootDoesNotStartTheCountAgain)

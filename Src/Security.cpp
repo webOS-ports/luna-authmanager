@@ -470,7 +470,7 @@ bool Security::matchPasscode(const std::string& passcode, int& retriesLeft, bool
     // answer tells nothing about whether it was right.
     if (now < m_lockedUntilMs) {
         lockedOut = true;
-        lockoutSeconds = (uint32_t) ((m_lockedUntilMs - now + 999) / 1000);
+        lockoutSeconds = lockoutSecondsLeft();
         retriesLeft = 0;
         return false;
     }
@@ -742,6 +742,14 @@ void Security::postIfBiometricChanged(bool before) const
 {
     if (biometricAllowed() != before)
         AuthService::instance()->postDeviceLockMode();
+}
+
+uint32_t Security::lockoutSecondsLeft() const
+{
+    const uint64_t now = monotonicMs();
+    if (now >= m_lockedUntilMs)
+        return 0;
+    return (uint32_t) ((m_lockedUntilMs - now + 999) / 1000);
 }
 
 bool Security::biometricAllowed() const

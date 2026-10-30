@@ -244,6 +244,11 @@ Done:
 Get the current lock mode, EAS policy state and retries left. Subscribable;
 subscribers are notified whenever the mode or policy changes.
 
+lockedOut and lockoutSeconds say whether a passcode lockout runs and for how
+many more seconds, as matchDevicePasscode reports them. A lockout saved
+before a reboot shows here as soon as the daemon is up. Its end is not
+posted: the seconds are for counting it down.
+
 \subsection syntax Syntax:
 \code
 {
@@ -285,6 +290,12 @@ static bool cbGetDeviceLockMode(LSHandle* lsHandle, LSMessage *message, void*)
         // to arm the sensor - the say is issueBiometricToken's.
         json_object_object_add(json, "biometricAllowed",
             json_object_new_boolean(Security::instance()->biometricAllowed()));
+        // A passcode lockout still running - one from before a reboot too -
+        // as matchDevicePasscode reports it, so the lock screen can count it
+        // down from the start instead of after a refused try.
+        const uint32_t lockoutSeconds = Security::instance()->lockoutSecondsLeft();
+        json_object_object_add(json, "lockedOut", json_object_new_boolean(lockoutSeconds != 0));
+        json_object_object_add(json, "lockoutSeconds", json_object_new_int64(lockoutSeconds));
     }
 
     if (!LSMessageReply(lsHandle, message, json_object_to_json_string(json), &lsError))
@@ -631,6 +642,9 @@ void AuthService::postDeviceLockMode()
         json_object_new_boolean(policy != 0 && policy->passwordRequired()));
     json_object_object_add(json, "biometricAllowed",
         json_object_new_boolean(Security::instance()->biometricAllowed()));
+    const uint32_t lockoutSeconds = Security::instance()->lockoutSecondsLeft();
+    json_object_object_add(json, "lockedOut", json_object_new_boolean(lockoutSeconds != 0));
+    json_object_object_add(json, "lockoutSeconds", json_object_new_int64(lockoutSeconds));
 
     const char* payload = json_object_to_json_string(json);
 

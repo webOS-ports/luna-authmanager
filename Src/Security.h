@@ -64,6 +64,11 @@ public:
     bool matchPasscode(const std::string& passcode, int& retriesLeft, bool& lockedOut,
                        uint32_t& lockoutSeconds);
 
+    // Whole seconds, rounded up, until a passcode is taken again; 0 when no
+    // lockout runs. For a lock screen to show a lockout as soon as it opens,
+    // not only once a try has been refused - after a reboot, say.
+    uint32_t lockoutSecondsLeft() const;
+
     bool passcodeSatisfiesPolicy(const EASPolicy * const policy) const;
 
     // The token a right passcode (or an allowed biometric match) earns.
