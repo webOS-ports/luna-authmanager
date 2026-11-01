@@ -38,3 +38,22 @@ flawfinder: Src/Security.cpp:515:  [1] (buffer) strlen:
 # directory O_DIRECTORY only to fsync it
 flawfinder: Src/Security.cpp:513:  [2] (misc) open:
 flawfinder: Src/Security.cpp:524:  [2] (misc) open:
+
+# false positive: the same libstdc++ small-string case as above - a
+# std::string returned from "" or from (buf, len) of bytes read(2) just
+# filled; ASan, UBSan and valgrind run these paths without a report
+gcc-fanalyzer-O0: Src/UnlockToken.cpp:54:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/UnlockToken.cpp:58:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/UnlockToken.cpp:73:12: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/UnlockToken.cpp:54:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/UnlockToken.cpp:58:16: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/UnlockToken.cpp:73:12: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O0: Src/Platform.cpp:74:32: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/Platform.cpp:74:32: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+
+# false positive: boot_id is a fixed kernel path opened read-only and
+# O_CLOEXEC, read once into a buffer one byte shorter than it, and only the
+# bytes read are used; the lockout file (Security.cpp) is opened
+# O_RDONLY|O_NOFOLLOW, so a link put in its place is not followed
+flawfinder: Src/Platform.cpp:61:  [2] (misc) open:
+flawfinder: Src/Platform.cpp:64:  [1] (buffer) read:

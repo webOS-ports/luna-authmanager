@@ -29,11 +29,45 @@ Bus names
 API
 ---
 
-* `setDevicePasscode` — `{"lockMode": "none"|"pin"|"password"|"pattern"|"face", "passCode": string}`
-  → `{returnValue}`, or `{returnValue: false, errorCode, errorText}`
-* `matchDevicePasscode` — `{"passCode": string}` → `{returnValue, lockedOut, retriesLeft, lockoutSeconds}`
-* `getDeviceLockMode` — subscribable → `{lockMode, policyState, retriesLeft, policyRequiresPassword}`
+* `setDevicePasscode` — `{"lockMode": "none"|"pin"|"password"|"pattern"|"face", "passCode": string,
+  "currentPasscode": string}` → `{returnValue}`, or `{returnValue: false, errorCode, errorText}`.
+  `currentPasscode` is required whenever a passcode is set, except while an
+  EAS policy that requires a password is pending (which also refuses
+  `"none"`, so it can replace the passcode but not remove it). A wrong one
+  is a wrong try like any other: errorCode -12, with `lockedOut`,
+  `retriesLeft` and `lockoutSeconds`.
+* `matchDevicePasscode` — `{"passCode": string}` → `{returnValue, unlockToken, tokenLifetime}`
+  on a match, `{returnValue: false, lockedOut, retriesLeft, lockoutSeconds}` otherwise
+* `getDeviceLockMode` — subscribable → `{lockMode, policyState, retriesLeft, policyRequiresPassword,
+  biometricAllowed}`
 * `getSecurityPolicy` — aggregate EAS policy and status
+
+On `com.webos.service.auth` only, each also checking its caller by name:
+
+* `consumeUnlockToken` — `{"token", "requester", "purpose": "unlock"|"enroll"}` → `{returnValue, valid}`.
+  `"unlock"` for `com.palm.display` alone, `"enroll"` for
+  `com.webos.service.faceunlock` and `com.webos.service.fingerprint`.
+* `issueBiometricToken` — `{"factor": "face"|"fingerprint", "requester"}` → `{returnValue, unlockToken}`,
+  or errorCode -13 with `passcodeRequired`. For the factor's own service.
+* `reportBiometricFailure` — `{"factor"}` → `{returnValue, biometricAllowed}`. For the factor's own service.
+
+### Unlock tokens
+
+A right passcode earns a token: 128 random bits as 32 hex digits, bound to
+the bus name that asked, good for 30 seconds and spent the first time it is
+presented, honoured or not. One is outstanding at a time, and a new
+passcode voids it. The lock screen hands it to
+`com.palm.display/control/setLockStatus`, which spends it here before it
+unlocks; Settings hands one to a biometric service to enrol a finger or a
+face. A biometric match earns a token for unlocking only.
+
+### Biometrics
+
+A finger or a face may unlock only once the passcode has been entered (or
+set) since this boot, within 72 hours of the last time it was, outside a
+passcode lockout, and before five rejected biometric tries in a row; after
+those it takes the passcode again. The biometric services report each
+rejection here, so there is one budget, not one per screen wake.
 
 Who may call them is set by ACG groups (`files/sysbus`):
 
@@ -48,6 +82,10 @@ Who may call them is set by ACG groups (`files/sysbus`):
   passcode (the Authenticator's lock) without being able to set or clear
   it. Its tries count with the lock screen's and share their lockout.
 * `auth.query` and `luna-sysmgr.operation` — the two read-only methods.
+* `auth.unlocktoken` — `consumeUnlockToken`; granted to `com.palm.display`
+  and the biometric services in their own perm files.
+* `auth.biometric` — `issueBiometricToken` and `reportBiometricFailure`;
+  granted to the biometric services in theirs.
 
 ### Passcodes
 
@@ -67,6 +105,14 @@ its count runs as well, and the device is wiped when it runs out.
 from crypt(3), with a fresh salt for every passcode:
 
     {"version": 2, "pin": "$y$j7T$<salt>$<hash>"}
+
+`/var/lib/authmanager/lockout` (0600, in a 0700 directory, written whole
+under a temporary name and renamed) keeps the count, the deadline and the
+biometric state, so neither a reboot nor a restart starts them again. Within
+a boot the monotonic deadline holds; after a reboot, the wall-clock one,
+never longer than the lockout was, and the whole lockout if the clock now
+reads earlier than when it was saved. An unreadable file counts the free
+tries as spent.
 
 A file without `"version"` is luna-sysmgr's format (an unsalted SHA-1, cut
 at its first NUL byte). It is still matched, and is rewritten as version 2

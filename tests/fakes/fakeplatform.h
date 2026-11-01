@@ -18,7 +18,7 @@
 
 /*
  * The test side of Src/Platform.h: the data directory is the test's own
- * scratch directory, and the monotonic clock only moves when a test moves it.
+ * scratch directory, and the clocks only move when a test moves them.
  */
 
 #ifndef FAKEPLATFORM_H
@@ -31,7 +31,22 @@
 namespace fakeplatform {
 
 void setDataDir(const std::string& dir);
+void setStateDir(const std::string& dir);
+
+// Moves the monotonic and the wall clock alike, as time passing does.
 void advanceMs(uint64_t ms);
+
+// The wall clock alone: set by hand, or by a reset RTC.
+void setRealtimeMs(uint64_t ms);
+uint64_t realtimeNowMs();
+
+// A reboot: a new boot id, and the monotonic clock starting again (from a
+// point a test cannot mistake for the old boot's).
+void reboot();
+void setBootId(const std::string& id);
+
+// Make randomBytes() fail until called with false.
+void failRandom(bool fail);
 
 } // namespace fakeplatform
 

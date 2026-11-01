@@ -19,18 +19,36 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include <string>
 
 /*
  * What the daemon takes from the system rather than from the bus: where its
- * files live and what time it is. Platform.cpp has the real ones; the tests
+ * files live, what time it is, which boot this is, and random bytes. Platform.cpp has the real ones; the tests
  * link their own, so they can run in a scratch directory and move the clock.
  */
 
 // The directory holding .passcode ("/var/luna/data" on the device).
 const char* authDataDir();
 
+// The directory holding the lockout state ("/var/lib/authmanager" on the
+// device). Created 0700 when missing.
+const char* authStateDir();
+
 // CLOCK_MONOTONIC in milliseconds.
 uint64_t monotonicMs();
+
+// CLOCK_REALTIME in milliseconds since the epoch. Only for carrying a
+// lockout across a reboot, where the monotonic clock starts again.
+uint64_t realtimeMs();
+
+// The kernel's id for this boot (/proc/sys/kernel/random/boot_id), or an
+// empty string if it cannot be read.
+std::string bootId();
+
+// len bytes from the kernel's random source. False if it fails.
+bool randomBytes(void* buf, size_t len);
 
 #endif // PLATFORM_H

@@ -150,3 +150,35 @@ TEST(Acg, KeymanagerNameMayWipe)
     EXPECT_EQ(held.count("keymanager-service.operation"), 1u);
     json_object_put(perm);
 }
+
+// Spending a token, and minting one for a finger or face, each have a group
+// of their own, with nothing else in it.
+TEST(Acg, TokenMethodsHaveGroupsOfTheirOwn)
+{
+    json_object* api = sysbusFile("luna-authmanager.api.json");
+    ASSERT_NE(api, nullptr);
+    EXPECT_EQ(groupMethods(api, "auth.unlocktoken"),
+              std::set<std::string>{ "com.webos.service.auth/consumeUnlockToken" });
+    EXPECT_EQ(groupMethods(api, "auth.biometric"),
+              (std::set<std::string>{ "com.webos.service.auth/issueBiometricToken",
+                                      "com.webos.service.auth/reportBiometricFailure" }));
+    json_object_object_foreach(api, group, methods) {
+        if (std::string(group) == "auth.unlocktoken" || std::string(group) == "auth.biometric")
+            continue;
+        for (size_t i = 0; i < json_object_array_length(methods); ++i) {
+            std::string m = json_object_get_string(json_object_array_get_idx(methods, i));
+            EXPECT_EQ(m.find("Token"), std::string::npos) << group << ": " << m;
+            EXPECT_EQ(m.find("Biometric"), std::string::npos) << group << ": " << m;
+        }
+    }
+    json_object_put(api);
+
+    json_object* groups = sysbusFile("luna-authmanager.groups.json");
+    ASSERT_NE(groups, nullptr);
+    for (const char* g : { "auth.unlocktoken", "auth.biometric" }) {
+        json_object* trust = nullptr;
+        ASSERT_TRUE(json_object_object_get_ex(groups, g, &trust)) << g;
+        EXPECT_STREQ(json_object_to_json_string(trust), "[ \"oem\" ]") << g;
+    }
+    json_object_put(groups);
+}

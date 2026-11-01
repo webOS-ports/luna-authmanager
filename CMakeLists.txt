@@ -60,7 +60,8 @@ include_directories(Src)
 add_library(authmanager-core OBJECT
     Src/AuthService.cpp
     Src/Security.cpp
-    Src/EASPolicyManager.cpp)
+    Src/EASPolicyManager.cpp
+    Src/UnlockToken.cpp)
 target_link_libraries(authmanager-core PUBLIC Qt::Core)
 
 add_executable(LunaAuthManager

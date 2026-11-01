@@ -94,9 +94,32 @@ TEST_F(AuthTest, NewPasscodeStartsTheCountAgain)
     start();
     boot();
     ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 4; ++i)
         matchPasscode("0482");
     ASSERT_TRUE(setPasscode("pin", "2468").returnValue);
+    for (int i = 0; i < 4; ++i)
+        EXPECT_FALSE(matchPasscode("0482").lockedOut);
+    EXPECT_TRUE(matchPasscode("2468").returnValue);
+}
+
+// Changing the passcode takes the current one, which a lockout refuses like
+// any other try: no way round the lockout by setting a new passcode.
+TEST_F(AuthTest, NoNewPasscodeDuringALockout)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    for (int i = 0; i < 5; ++i)
+        matchPasscode("0482");
+    Reply r = setPasscode("pin", "2468");
+    EXPECT_FALSE(r.returnValue);
+    EXPECT_EQ(r.errorCode, Security::FailureCurrentPasscode);
+    EXPECT_TRUE(r.lockedOut);
+    EXPECT_EQ(r.lockoutSeconds, 30);
+    EXPECT_FALSE(setPasscode("none", "").returnValue);
+
+    fakeplatform::advanceMs(30 * 1000);
+    EXPECT_TRUE(setPasscode("pin", "2468").returnValue);
     EXPECT_TRUE(matchPasscode("2468").returnValue);
 }
 
