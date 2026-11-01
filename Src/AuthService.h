@@ -38,7 +38,10 @@
  *    passcode already uses.
  *
  * Methods: setDevicePasscode, matchDevicePasscode, getDeviceLockMode
- * (subscribable), getSecurityPolicy.
+ * (subscribable), getSecurityPolicy. com.webos.service.auth adds the unlock
+ * token's own methods: consumeUnlockToken (luna-displaymanager, and the
+ * biometric services for enrolment), issueBiometricToken and
+ * reportBiometricFailure (the biometric services).
  */
 class AuthService
 {
@@ -59,7 +62,7 @@ public:
 private:
     AuthService();
 
-    bool registerName(const char* name, LSHandle** handle);
+    bool registerName(const char* name, LSMethod* methods, LSHandle** handle);
 
     static AuthService* s_instance;
 

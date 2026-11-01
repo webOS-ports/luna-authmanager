@@ -2,6 +2,8 @@
  "allowedNames": ["com.palm.systemmanager", "com.palm.systemmanager-keymanager", "com.webos.service.auth"],
  "auth.passcode": ["oem"],
  "auth.verify": ["oem"],
+ "auth.unlocktoken": ["oem"],
+ "auth.biometric": ["oem"],
  "auth.query": ["dev"],
  "luna-sysmgr.operation": ["dev"]
 }
