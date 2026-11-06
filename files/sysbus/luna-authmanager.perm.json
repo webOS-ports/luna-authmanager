@@ -8,7 +8,7 @@
         "storaged.operation"
     ],
     "com.webos.service.auth": [],
-    "com.webos.surfacemanager-cardshell": [
+    "com.webos.surfacemanager.cardshell": [
         "auth.passcode"
     ]
 }

@@ -26,7 +26,7 @@
 
 namespace {
 
-const char* const kShell = "com.webos.surfacemanager-cardshell";
+const char* const kShell = "com.webos.surfacemanager.cardshell";
 const char* const kDisplay = "com.palm.display";
 const char* const kFace = "com.webos.service.faceunlock";
 const char* const kFinger = "com.webos.service.fingerprint";

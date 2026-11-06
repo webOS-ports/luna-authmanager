@@ -72,7 +72,7 @@ rejection here, so there is one budget, not one per screen wake.
 Who may call them is set by ACG groups (`files/sysbus`):
 
 * `auth.passcode` — `setDevicePasscode` and `matchDevicePasscode`, on both
-  names. Held by the lock screen (`com.webos.surfacemanager-cardshell`,
+  names. Held by the lock screen (`com.webos.surfacemanager.cardshell`,
   granted in this package's perm file), and asked for in their appinfo by
   the Settings screen-lock page and the email app (whose Enyo authlib asks
   for a device PIN when an Exchange policy needs one). Nothing else: an app
