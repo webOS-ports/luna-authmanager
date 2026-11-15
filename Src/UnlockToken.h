@@ -37,6 +37,15 @@
  * luna-displaymanager spends one to unlock the screen (PurposeUnlock); the
  * biometric services spend one to enrol a finger or a face (PurposeEnroll),
  * so a token won by a biometric match is issued for unlocking only.
+ *
+ * Enrolling is the one exception to "good once". A token spent to enrol
+ * stays good for further enrolments by the same owner, and for nothing
+ * else, until s_enrollWindowMs after the passcode was shown, so that
+ * several fingers can be added with one passcode. Android does the same:
+ * LockSettingsService keeps the Gatekeeper password handle that Settings
+ * mints each enrolment's auth token from for 10 minutes
+ * (GK_PW_HANDLE_STORE_DURATION_MS). Presented any other way (another
+ * owner or purpose, or too late) it is gone, as before.
  */
 class UnlockToken
 {
@@ -47,6 +56,7 @@ public:
     };
 
     static const uint64_t s_lifetimeMs = 30 * 1000;
+    static const uint64_t s_enrollWindowMs = 10 * 60 * 1000;
 
     UnlockToken();
     ~UnlockToken();
@@ -56,7 +66,8 @@ public:
     std::string issue(const std::string& owner, unsigned purposes);
 
     // True once for the token issue() returned, if presented on behalf of
-    // owner, for one of its purposes, before it expired.
+    // owner, for one of its purposes, before it expired; for PurposeEnroll,
+    // again for every enrolment within s_enrollWindowMs of issue().
     bool consume(const std::string& token, const std::string& owner, Purpose purpose);
 
     // Forget the outstanding token, e.g. when the passcode changes.
@@ -67,6 +78,8 @@ private:
     std::string m_owner;
     unsigned m_purposes;
     uint64_t m_expiresMs;
+    uint64_t m_enrollUntilMs;
+    bool m_enrolling;
 };
 
 #endif // UNLOCK_TOKEN_H

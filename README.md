@@ -36,7 +36,7 @@ API
   `"none"`, so it can replace the passcode but not remove it). A wrong one
   is a wrong try like any other: errorCode -12, with `lockedOut`,
   `retriesLeft` and `lockoutSeconds`.
-* `matchDevicePasscode` — `{"passCode": string}` → `{returnValue, unlockToken, tokenLifetime}`
+* `matchDevicePasscode` — `{"passCode": string}` → `{returnValue, unlockToken, tokenLifetime, enrollLifetime}`
   on a match, `{returnValue: false, lockedOut, retriesLeft, lockoutSeconds}` otherwise
 * `getDeviceLockMode` — subscribable → `{lockMode, policyState, retriesLeft, policyRequiresPassword,
   biometricAllowed}`
@@ -47,6 +47,10 @@ On `com.webos.service.auth` only, each also checking its caller by name:
 * `consumeUnlockToken` — `{"token", "requester", "purpose": "unlock"|"enroll"}` → `{returnValue, valid}`.
   `"unlock"` for `com.palm.display` alone, `"enroll"` for
   `com.webos.service.faceunlock` and `com.webos.service.fingerprint`.
+  Spent either way, except by a valid enrolment: the token then stays good
+  for enrolling alone, for the same requester, until `enrollLifetime`
+  (10 minutes) after the passcode, so several fingers take one passcode.
+  Android keeps its Gatekeeper password handle for as long.
 * `issueBiometricToken` — `{"factor": "face"|"fingerprint", "requester"}` → `{returnValue, unlockToken}`,
   or errorCode -13 with `passcodeRequired`. For the factor's own service.
 * `reportBiometricFailure` — `{"factor"}` → `{returnValue, biometricAllowed}`. For the factor's own service.
