@@ -158,6 +158,7 @@ Check a passcode against the one set on the device.
     "returnValue": boolean,
     "unlockToken": string,
     "tokenLifetime": int,
+    "enrollLifetime": int,
     "lockedOut": boolean,
     "retriesLeft": int,
     "lockoutSeconds": int
@@ -168,6 +169,12 @@ A right passcode earns an unlockToken: 32 hex digits, good once, for
 tokenLifetime seconds, and only when presented on behalf of the bus name
 that asked (the lock screen hands it to com.palm.display/control/setLockStatus,
 Settings to a biometric enrolment). A caller with no service name gets none.
+
+Spent on an enrolment within tokenLifetime, the same token stays good for
+further enrolments by the same caller, and for nothing else, until
+enrollLifetime seconds after the passcode (10 minutes, as Android's
+LockSettingsService keeps its Gatekeeper password handle). Settings can then
+add several fingers with one passcode.
 
 After five wrong passcodes in a row each further one locks matching out for
 twice as long as the last (30 seconds first, an hour at most). While locked
@@ -215,6 +222,8 @@ Done:
         json_object_object_add(reply, "unlockToken", json_object_new_string(token.c_str()));
         json_object_object_add(reply, "tokenLifetime",
                                json_object_new_int((int) (UnlockToken::s_lifetimeMs / 1000)));
+        json_object_object_add(reply, "enrollLifetime",
+                               json_object_new_int((int) (UnlockToken::s_enrollWindowMs / 1000)));
     }
     if (!success) {
         json_object_object_add(reply, "lockedOut", json_object_new_boolean(lockedOut));
@@ -404,7 +413,9 @@ face and fingerprint services (purpose "enroll") only.
 \endcode
 
 requester is the bus name that presented the token to the caller. Replies
-{"returnValue": true, "valid": boolean}; the token is spent either way.
+{"returnValue": true, "valid": boolean}; the token is spent either way,
+except by a valid enrolment, after which it is good for enrolling alone
+until the window matchDevicePasscode gave (enrollLifetime) is over.
 */
 static bool cbConsumeUnlockToken(LSHandle* lsHandle, LSMessage* message, void*)
 {

@@ -38,6 +38,8 @@ static bool sameToken(const std::string& a, const std::string& b)
 UnlockToken::UnlockToken()
     : m_purposes(0)
     , m_expiresMs(0)
+    , m_enrollUntilMs(0)
+    , m_enrolling(false)
 {
 }
 
@@ -69,7 +71,9 @@ std::string UnlockToken::issue(const std::string& owner, unsigned purposes)
     m_token = token;
     m_owner = owner;
     m_purposes = purposes;
-    m_expiresMs = monotonicMs() + s_lifetimeMs;
+    const uint64_t now = monotonicMs();
+    m_expiresMs = now + s_lifetimeMs;
+    m_enrollUntilMs = now + s_enrollWindowMs;
     return token;
 }
 
@@ -78,9 +82,20 @@ bool UnlockToken::consume(const std::string& token, const std::string& owner, Pu
     if (m_token.empty() || !sameToken(token, m_token))
         return false;
 
-    // Presented: spent, whether or not it is honoured.
+    // Once enrolling, the deadline is the enrolment window's; until then
+    // (and to unlock) it is the token's own.
+    const uint64_t deadline = m_enrolling ? m_enrollUntilMs : m_expiresMs;
     const bool ok = owner == m_owner && (m_purposes & purpose) != 0 &&
-                    monotonicMs() < m_expiresMs;
+                    monotonicMs() < deadline;
+
+    // An enrolment keeps it, for enrolling alone.
+    if (ok && purpose == PurposeEnroll) {
+        m_purposes = PurposeEnroll;
+        m_enrolling = true;
+        return true;
+    }
+
+    // Presented any other way: spent, whether or not it is honoured.
     clear();
     return ok;
 }
@@ -92,4 +107,6 @@ void UnlockToken::clear()
     m_owner.clear();
     m_purposes = 0;
     m_expiresMs = 0;
+    m_enrollUntilMs = 0;
+    m_enrolling = false;
 }

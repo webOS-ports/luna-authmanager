@@ -226,3 +226,80 @@ TEST_F(AuthTest, TokenMethodsOnlyOnTheModernName)
         EXPECT_TRUE(fakebus::callMethod("com.webos.service.auth", "/", m, "{}", kDisplay).found) << m;
     }
 }
+
+// Several fingers with one passcode: an enrolment keeps the token, for
+// enrolling alone, until 10 minutes after the passcode (as Android keeps
+// its Gatekeeper password handle).
+TEST_F(AuthTest, AnEnrolmentKeepsTheTokenForMoreEnrolments)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    const char* settings = "org.webosports.app.settings";
+
+    Reply r = matchPasscode("7351", settings);
+    EXPECT_NE(r.raw.find("\"enrollLifetime\": 600"), std::string::npos) << r.raw;
+    std::string t = r.unlockToken;
+
+    EXPECT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    fakeplatform::advanceMs(UnlockToken::s_lifetimeMs);
+    EXPECT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    EXPECT_TRUE(consumeToken(kFace, t, settings, "enroll").valid);
+    fakeplatform::advanceMs(UnlockToken::s_enrollWindowMs - UnlockToken::s_lifetimeMs - 1);
+    EXPECT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    fakeplatform::advanceMs(1);
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+}
+
+// The first enrolment still has to come within the token's own lifetime.
+TEST_F(AuthTest, TheFirstEnrolmentIsWithinTheTokensLifetime)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    const char* settings = "org.webosports.app.settings";
+
+    std::string t = matchPasscode("7351", settings).unlockToken;
+    fakeplatform::advanceMs(UnlockToken::s_lifetimeMs);
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+}
+
+// Once enrolling, it unlocks nothing, and presented any other way it is gone.
+TEST_F(AuthTest, AnEnrolmentTokenUnlocksNothing)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    const char* settings = "org.webosports.app.settings";
+
+    std::string t = matchPasscode("7351", settings).unlockToken;
+    ASSERT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    EXPECT_FALSE(consumeToken(kDisplay, t, settings).valid);
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+
+    t = matchPasscode("7351", settings).unlockToken;
+    ASSERT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    EXPECT_FALSE(consumeToken(kFinger, t, "com.palm.app.email", "enroll").valid);
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+}
+
+// A new passcode, or a new token, ends the enrolment window.
+TEST_F(AuthTest, ANewPasscodeOrTokenEndsTheEnrolmentWindow)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    const char* settings = "org.webosports.app.settings";
+
+    std::string t = matchPasscode("7351", settings).unlockToken;
+    ASSERT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    ASSERT_TRUE(setPasscode("pin", "2468").returnValue);
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+
+    t = matchPasscode("2468", settings).unlockToken;
+    ASSERT_TRUE(consumeToken(kFinger, t, settings, "enroll").valid);
+    std::string next = matchPasscode("2468", kShell).unlockToken;
+    EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
+    EXPECT_TRUE(consumeToken(kDisplay, next, kShell).valid);
+}
