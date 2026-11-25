@@ -168,7 +168,8 @@ Check a passcode against the one set on the device.
 A right passcode earns an unlockToken: 32 hex digits, good once, for
 tokenLifetime seconds, and only when presented on behalf of the bus name
 that asked (the lock screen hands it to com.palm.display/control/setLockStatus,
-Settings to a biometric enrolment). A caller with no service name gets none.
+Settings to a biometric enrolment, or to the Wi-Fi service to see a saved
+network's passphrase). A caller with no service name gets none.
 
 Spent on an enrolment within tokenLifetime, the same token stays good for
 further enrolments by the same caller, and for nothing else, until
@@ -211,7 +212,7 @@ static bool cbMatchDevicePasscode(LSHandle* lsHandle, LSMessage *message, void*)
     if (success) {
         const char* sender = LSMessageGetSenderServiceName(message);
         token = Security::instance()->unlockToken().issue(sender ? sender : "",
-            UnlockToken::PurposeUnlock | UnlockToken::PurposeEnroll);
+            UnlockToken::PurposeUnlock | UnlockToken::PurposeEnroll | UnlockToken::PurposeReveal);
     }
 
 Done:
@@ -405,17 +406,19 @@ static bool stringParam(json_object* root, const char* key, std::string& out)
 \page com_webos_service_auth Service API com.webos.service.auth
 \section com_webos_service_auth_consume_unlock_token consumeUnlockToken
 
-Spend an unlock token. For com.palm.display (purpose "unlock") and for the
-face and fingerprint services (purpose "enroll") only.
+Spend an unlock token. For com.palm.display (purpose "unlock"), for the
+face and fingerprint services (purpose "enroll") and for the Wi-Fi service
+(purpose "reveal", before it hands out a saved network's passphrase) only.
 
 \code
-{ "token": string, "requester": string, "purpose": "unlock" | "enroll" }
+{ "token": string, "requester": string, "purpose": "unlock" | "enroll" | "reveal" }
 \endcode
 
 requester is the bus name that presented the token to the caller. Replies
 {"returnValue": true, "valid": boolean}; the token is spent either way,
 except by a valid enrolment, after which it is good for enrolling alone
-until the window matchDevicePasscode gave (enrollLifetime) is over.
+until the window matchDevicePasscode gave (enrollLifetime) is over. A reveal
+is good once, like an unlock: one passcode, one passphrase.
 */
 static bool cbConsumeUnlockToken(LSHandle* lsHandle, LSMessage* message, void*)
 {
@@ -426,18 +429,31 @@ static bool cbConsumeUnlockToken(LSHandle* lsHandle, LSMessage* message, void*)
     json_object* root = json_tokener_parse(payload);
     std::string token, requester, purpose;
     if (!stringParam(root, "token", token) || !stringParam(root, "requester", requester) ||
-        !stringParam(root, "purpose", purpose) || (purpose != "unlock" && purpose != "enroll")) {
+        !stringParam(root, "purpose", purpose) ||
+        (purpose != "unlock" && purpose != "enroll" && purpose != "reveal")) {
         if (root)
             json_object_put(root);
         replyError(lsHandle, message, Security::FailureBadRequest,
-                   "token, requester and purpose (unlock or enroll) are required");
+                   "token, requester and purpose (unlock, enroll or reveal) are required");
         return true;
     }
     json_object_put(root);
 
-    const bool allowed = purpose == "unlock"
-        ? callerIs(message, "com.palm.display")
-        : callerIs(message, biometricService("face")) || callerIs(message, biometricService("fingerprint"));
+    bool allowed;
+    UnlockToken::Purpose wanted;
+    if (purpose == "unlock") {
+        allowed = callerIs(message, "com.palm.display");
+        wanted = UnlockToken::PurposeUnlock;
+    }
+    else if (purpose == "enroll") {
+        allowed = callerIs(message, biometricService("face")) ||
+                  callerIs(message, biometricService("fingerprint"));
+        wanted = UnlockToken::PurposeEnroll;
+    }
+    else {
+        allowed = callerIs(message, "com.webos.service.wifi");
+        wanted = UnlockToken::PurposeReveal;
+    }
     if (!allowed) {
         g_warning("%s: %s may not spend a token for %s", __func__,
                   LSMessageGetSenderServiceName(message) ? LSMessageGetSenderServiceName(message) : "(anonymous)",
@@ -447,8 +463,7 @@ static bool cbConsumeUnlockToken(LSHandle* lsHandle, LSMessage* message, void*)
         return true;
     }
 
-    const bool valid = Security::instance()->unlockToken().consume(token, requester,
-        purpose == "unlock" ? UnlockToken::PurposeUnlock : UnlockToken::PurposeEnroll);
+    const bool valid = Security::instance()->unlockToken().consume(token, requester, wanted);
     token.replace(0, token.size(), token.size(), 0);
 
     json_object* json = json_object_new_object();

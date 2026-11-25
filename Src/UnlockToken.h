@@ -35,8 +35,11 @@
  * Only one is outstanding at a time; issuing another replaces it.
  *
  * luna-displaymanager spends one to unlock the screen (PurposeUnlock); the
- * biometric services spend one to enrol a finger or a face (PurposeEnroll),
- * so a token won by a biometric match is issued for unlocking only.
+ * biometric services spend one to enrol a finger or a face (PurposeEnroll);
+ * the Wi-Fi service spends one to hand a saved network's passphrase to
+ * Settings, to be shown or shared as a QR code (PurposeReveal). A token won
+ * by a biometric match is issued for unlocking only: neither a new finger
+ * nor a stored secret is to be had without the passcode itself.
  *
  * Enrolling is the one exception to "good once". A token spent to enrol
  * stays good for further enrolments by the same owner, and for nothing
@@ -52,7 +55,8 @@ class UnlockToken
 public:
     enum Purpose {
         PurposeUnlock = 1 << 0,
-        PurposeEnroll = 1 << 1
+        PurposeEnroll = 1 << 1,
+        PurposeReveal = 1 << 2
     };
 
     static const uint64_t s_lifetimeMs = 30 * 1000;

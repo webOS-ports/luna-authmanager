@@ -39,8 +39,9 @@
  *
  * Methods: setDevicePasscode, matchDevicePasscode, getDeviceLockMode
  * (subscribable), getSecurityPolicy. com.webos.service.auth adds the unlock
- * token's own methods: consumeUnlockToken (luna-displaymanager, and the
- * biometric services for enrolment), issueBiometricToken and
+ * token's own methods: consumeUnlockToken (luna-displaymanager, the
+ * biometric services for enrolment, and the Wi-Fi service to reveal a saved
+ * passphrase), issueBiometricToken and
  * reportBiometricFailure (the biometric services).
  */
 class AuthService

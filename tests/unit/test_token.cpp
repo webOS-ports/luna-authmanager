@@ -18,7 +18,8 @@
 
 // The unlock token a right passcode earns: random, bound to the name that
 // asked, good once, for 30 seconds, and spent only by com.palm.display (to
-// unlock) or by the biometric services (to enrol).
+// unlock), by the biometric services (to enrol) or by the Wi-Fi service (to
+// reveal a saved passphrase).
 
 #include "fixture.h"
 
@@ -30,6 +31,8 @@ const char* const kShell = "com.webos.surfacemanager.cardshell";
 const char* const kDisplay = "com.palm.display";
 const char* const kFace = "com.webos.service.faceunlock";
 const char* const kFinger = "com.webos.service.fingerprint";
+const char* const kWifi = "com.webos.service.wifi";
+const char* const kSettings = "org.webosports.app.settings.wifi";
 
 bool isHex32(const std::string& s)
 {
@@ -302,4 +305,101 @@ TEST_F(AuthTest, ANewPasscodeOrTokenEndsTheEnrolmentWindow)
     std::string next = matchPasscode("2468", kShell).unlockToken;
     EXPECT_FALSE(consumeToken(kFinger, t, settings, "enroll").valid);
     EXPECT_TRUE(consumeToken(kDisplay, next, kShell).valid);
+}
+
+// Settings shows the passcode, the Wi-Fi service spends the token to hand
+// over a saved network's passphrase: once.
+TEST_F(AuthTest, APasscodeRevealsOnce)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    std::string t = matchPasscode("7351", kSettings).unlockToken;
+
+    Reply first = consumeToken(kWifi, t, kSettings, "reveal");
+    EXPECT_TRUE(first.returnValue);
+    EXPECT_TRUE(first.valid);
+    EXPECT_FALSE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+}
+
+// Only the Wi-Fi service spends a token to reveal, and the Wi-Fi service
+// spends it for nothing else; a refused caller does not spend it.
+TEST_F(AuthTest, OnlyTheWifiServiceReveals)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    std::string t = matchPasscode("7351", kSettings).unlockToken;
+
+    for (const char* who : { kDisplay, kFace, kFinger, kSettings, kShell, "",
+                             "com.webos.service.wifi.x", "com.webos.service.connectionmanager" }) {
+        Reply r = consumeToken(who, t, kSettings, "reveal");
+        EXPECT_FALSE(r.returnValue) << who;
+        EXPECT_EQ(r.errorCode, Security::FailureNotAllowed) << who;
+    }
+    EXPECT_EQ(consumeToken(kWifi, t, kSettings, "unlock").errorCode, Security::FailureNotAllowed);
+    EXPECT_EQ(consumeToken(kWifi, t, kSettings, "enroll").errorCode, Security::FailureNotAllowed);
+    EXPECT_TRUE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+}
+
+// On behalf of anyone but the app that showed the passcode: refused, and spent.
+TEST_F(AuthTest, ARevealIsBoundToWhoAskedForIt)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    std::string t = matchPasscode("7351", kSettings).unlockToken;
+
+    EXPECT_FALSE(consumeToken(kWifi, t, "com.palm.app.email", "reveal").valid);
+    EXPECT_FALSE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+}
+
+TEST_F(AuthTest, ARevealTokenExpires)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+
+    std::string t = matchPasscode("7351", kSettings).unlockToken;
+    fakeplatform::advanceMs(UnlockToken::s_lifetimeMs - 1);
+    EXPECT_TRUE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+
+    t = matchPasscode("7351", kSettings).unlockToken;
+    fakeplatform::advanceMs(UnlockToken::s_lifetimeMs);
+    EXPECT_FALSE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+}
+
+// A finger or a face unlocks the phone; it does not hand out a passphrase.
+TEST_F(AuthTest, ABiometricTokenRevealsNothing)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+    ASSERT_TRUE(matchPasscode("7351", kShell).returnValue);
+
+    Reply b = callAuthAs("issueBiometricToken",
+                         "{\"factor\":\"fingerprint\",\"requester\":\"" + std::string(kSettings) + "\"}",
+                         kFinger);
+    ASSERT_TRUE(b.returnValue) << b.raw;
+    ASSERT_FALSE(b.unlockToken.empty());
+    EXPECT_FALSE(consumeToken(kWifi, b.unlockToken, kSettings, "reveal").valid);
+}
+
+// A reveal is spent like an unlock: it opens no enrolment window, and an
+// enrolment token does not reveal.
+TEST_F(AuthTest, ARevealAndAnEnrolmentDoNotMix)
+{
+    start();
+    boot();
+    ASSERT_TRUE(setPasscode("pin", "7351").returnValue);
+
+    std::string t = matchPasscode("7351", kSettings).unlockToken;
+    ASSERT_TRUE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+    EXPECT_FALSE(consumeToken(kFinger, t, kSettings, "enroll").valid);
+
+    t = matchPasscode("7351", kSettings).unlockToken;
+    ASSERT_TRUE(consumeToken(kFinger, t, kSettings, "enroll").valid);
+    EXPECT_FALSE(consumeToken(kWifi, t, kSettings, "reveal").valid);
+    // ... and that try spent the enrolment window too.
+    EXPECT_FALSE(consumeToken(kFinger, t, kSettings, "enroll").valid);
 }
